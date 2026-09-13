@@ -47,7 +47,7 @@
 - name: dsh-semantic-docs
   config:
     enabled: true
-    workspace: E:\alice   # 缺省 = process.cwd()
+    workspace: <工作区绝对路径>   # 缺省 = process.cwd()
 ```
 
 - 注册表：`<workspace>/docs/semantics/registry.json`（唯一真源）
@@ -92,6 +92,10 @@ node scripts/smoke.mjs                         # 直测 execute + render + outpu
 - D3 依赖文件 mtime：仅比较「impl 最新 mtime vs 文档 mtime」，不感知内容变更；跨时区/时钟回拨会失真。
 - 未验证项：本版**未接入** `preflight_check`（README §10 U2：先只报不拦，观察误报率两周）。
 
-## 7 · License
+## 7 · 相关
+
+- [我的数字生命爱丽丝 — 插件生态中心（架构总览）](https://github.com/jonah791/alice-digital-life)
+
+## 8 · License
 
 MIT

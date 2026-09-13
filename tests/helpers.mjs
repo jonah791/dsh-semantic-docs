@@ -7,13 +7,17 @@ const here = dirname(fileURLToPath(import.meta.url))
 
 /** 插件根目录（tests/ 的上一级） */
 export const PLUGIN_DIR = dirname(here)
-/** 测试临时工作区根（只在插件目录内写入，绝不碰 E:\alice 其它文件） */
+/** 测试临时工作区根（只在插件目录内写入，绝不碰真实工作区其它文件） */
 export const WORK_ROOT = join(here, '.work')
 
-/** 真实工作区（只读使用：语义文档与注册表） */
-export const REAL_WORKSPACE = 'E:/alice'
-export const SENTINEL_DOC = 'E:/alice/self-plugins/dsh-agent-sentinel/docs/semantic.md'
-export const PANEL_DOC = 'E:/alice/self-plugins/dsh-panel/docs/semantic.md'
+/**
+ * 真实工作区（只读使用：语义文档与注册表）。
+ * 从插件位置推导（<workspace>/self-plugins/<plugin>），跨 OS / 跨检出可用；
+ * 非标准布局用 `SEMANTIC_DOCS_WORKSPACE` 覆盖。
+ */
+export const REAL_WORKSPACE = process.env['SEMANTIC_DOCS_WORKSPACE'] ?? dirname(dirname(PLUGIN_DIR))
+export const SENTINEL_DOC = join(REAL_WORKSPACE, 'self-plugins', 'dsh-agent-sentinel', 'docs', 'semantic.md')
+export const PANEL_DOC = join(REAL_WORKSPACE, 'self-plugins', 'dsh-panel', 'docs', 'semantic.md')
 
 export function freshWorkspace(name) {
   const dir = join(WORK_ROOT, name)
