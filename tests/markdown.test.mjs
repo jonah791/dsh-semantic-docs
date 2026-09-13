@@ -73,3 +73,56 @@ test('解析是纯函数：同输入两次结果一致（无 IO / 无时间依�
   const b = parseSemanticDoc(DOC_COMPLETE)
   assert.deepEqual(a, b)
 })
+
+// ---- 元信息解析（2026-09-13 实测修正：模板推荐的加粗状态读不出来）----
+
+const HEADER_BLOCKQUOTE = [
+  '# 语义文档：样本能力',
+  '',
+  '> 版本 v0.3 · 2026-09-13 · 作者：爱丽丝 · 状态：**已实现（M1：租约）**',
+  '> 开发方式：语义文档优先',
+  '> 实现落点：`src/x.ts`（主）',
+  '',
+  '## 1 · 元信息',
+  '',
+  '| 字段 | 值 |',
+  '|------|-----|',
+  '| 载体 | 插件 |',
+].join('\n')
+
+test('元信息：加粗状态可解析（模板推荐写法，此前一律 null）', () => {
+  const doc = parseSemanticDoc(HEADER_BLOCKQUOTE)
+  assert.equal(doc.meta.version, 'v0.3')
+  assert.equal(doc.meta.date, '2026-09-13')
+  assert.equal(doc.meta.status, '已实现（M1：租约）', '加粗标记被剥掉，值在行尾截断')
+  assert.equal(doc.meta.implHints.length, 1)
+  assert.ok(doc.meta.implHints[0].includes('src/x.ts'))
+})
+
+test('元信息：状态值在 · 分隔符处截断，不吃掉后续内容', () => {
+  const doc = parseSemanticDoc([
+    '# 语义文档：样本',
+    '',
+    '> 版本 v1 · 2026-01-01 · 状态：已验收 · 作者：爱丽丝',
+    '> 实现落点：`src/y.ts`',
+    '',
+    '## 1 · 元信息',
+  ].join('\n'))
+  assert.equal(doc.meta.status, '已验收')
+  assert.equal(doc.meta.version, 'v1')
+})
+
+test('元信息：写在 §1 表格里的版本/状态不被头部解析（规范位置是 H1 后的引用块）', () => {
+  const doc = parseSemanticDoc([
+    '# 语义文档：样本',
+    '',
+    '## 1 · 元信息',
+    '',
+    '| 字段 | 值 |',
+    '|------|-----|',
+    '| 版本 | v0.9 |',
+    '| 状态 | verified |',
+  ].join('\n'))
+  assert.equal(doc.meta.version, null)
+  assert.equal(doc.meta.status, null)
+})

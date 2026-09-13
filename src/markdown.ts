@@ -319,10 +319,14 @@ export function parseSemanticDoc(text: string): DocParse {
 
   const meta: DocMetaFields = (() => {
     const scope = headerText.trim().length > 0 ? headerText : text
-    const version = /版本\s*[：:]?\s*(v?\d+(?:\.\d+)*)/i.exec(scope)?.[1] ?? null
-    const date = /(20\d{2}-\d{2}-\d{2})/.exec(scope)?.[1] ?? null
-    const status = /状态\s*[：:]\s*([^·|\n*]+)/.exec(scope)?.[1]?.trim() ?? null
-    const implHints = [...scope.matchAll(/实现落点[^\n]*/g)].map((m) => cleanInline(m[0])).slice(0, 3)
+    // 逐行去 Markdown 强调/行内代码（**保留换行**，否则状态值会吞掉后续行）。
+    // 2026-09-13 实测修正：模板推荐的 `状态：**已实现**` 加粗写法曾因正则 `[^·|\n*]+` 遇 `*`
+    // 直接失配 → 状态一律解析为 null（连按模板写的文档也读不出来）。
+    const plain = scope.split('\n').map(cleanInline).join('\n')
+    const version = /版本\s*[：:]?\s*(v?\d+(?:\.\d+)*)/i.exec(plain)?.[1] ?? null
+    const date = /(20\d{2}-\d{2}-\d{2})/.exec(plain)?.[1] ?? null
+    const status = /状态\s*[：:]\s*([^·|\n]+)/.exec(plain)?.[1]?.trim() ?? null
+    const implHints = [...plain.matchAll(/实现落点[^\n]*/g)].map((m) => cleanInline(m[0])).slice(0, 3)
     return { version, date, status, implHints }
   })()
 
