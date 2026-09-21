@@ -126,3 +126,42 @@ test('元信息：写在 §1 表格里的版本/状态不被头部解析（规�
   assert.equal(doc.meta.version, null)
   assert.equal(doc.meta.status, null)
 })
+
+// ---- 表格分块（2026-09-22 修正：续块首行曾被当表头吃掉）----
+
+test('表格中间的空行不得吃掉数据行（续块无表头——2026-09-22 实测缺陷）', () => {
+  // 反例来源：dsh-agent-memory/docs/semantic.md 的 §7 在 A44 与 A45 之间有一个空行，
+  // 原实现无条件 `block.slice(1)` 丢首行 ⇒ A45 被当表头静默吞掉（total 78 行报 77）。
+  const doc = parseSemanticDoc([
+    '# 语义文档：样本',
+    '',
+    '## 7 · 可证伪验收清单',
+    '',
+    '| # | 命题 | 证据 | 状态 |',
+    '|---|------|------|------|',
+    '| A1 | 第一条 | 单测 | ✔ 已实测 |',
+    '| A2 | 第二条 | 单测 | ✔ 已实测 |',
+    '',
+    '| A3 | 空行之后的第三条 | 单测 | ✔ 已实测 |',
+    '| A4 | 第四条 | 单测 | 待验收 |',
+  ].join('\n'))
+  assert.equal(doc.acceptance.total, 4, '空行切断后的续块首行仍是数据行，不能被当表头吃掉')
+  assert.deepEqual(doc.acceptance.rows.map((r) => r.id), ['A1', 'A2', 'A3', 'A4'])
+  assert.equal(doc.acceptance.proven, 3)
+  assert.equal(doc.acceptance.pending, 1)
+})
+
+test('有表头的正常表格仍不吃数据行（修正不得反噬正常形态）', () => {
+  const doc = parseSemanticDoc([
+    '# 语义文档：样本',
+    '',
+    '## 7 · 可证伪验收清单',
+    '',
+    '| # | 命题 | 证据 | 状态 |',
+    '|---|------|------|------|',
+    '| A1 | 甲 | 单测 | ✔ 已实测 |',
+    '| A2 | 乙 | 单测 | 待线上验收 |',
+  ].join('\n'))
+  assert.equal(doc.acceptance.total, 2)
+  assert.deepEqual(doc.acceptance.rows.map((r) => r.id), ['A1', 'A2'])
+})

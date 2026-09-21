@@ -212,11 +212,16 @@ function parseTables(lines: readonly string[], mask: readonly boolean[], span: S
     if (block.length === 0) continue
     const first = block[0]
     if (first === undefined) continue
-    let body = block.slice(1)
+    // 表头判据（2026-09-22 修正）：**只有第二行是分隔行时，首行才是表头**。
+    // 原实现无条件 `block.slice(1)` 丢掉首行 ⇒ 表格被空行切成多块时，后续块既无表头也无分隔行，
+    // 它的首**数据行**被静默吃掉——实测 6 份文档共 8 行验收因此未计入（如 memory-continuity 的 A45），
+    // 后果是 total 偏小、`verified` 判据（pending==0）偏松。
     const second = block[1]
-    if (second !== undefined && second.cells.length > 0 && second.cells.every((c) => SEP_RE.test(c) || c.length === 0) && second.cells.join('').includes('-')) {
-      body = block.slice(2)
-    }
+    const hasSeparator = second !== undefined
+      && second.cells.length > 0
+      && second.cells.every((c) => SEP_RE.test(c) || c.length === 0)
+      && second.cells.join('').includes('-')
+    const body = hasSeparator ? block.slice(2) : block
     tables.push({
       header: first.cells,
       rows: body.map((b) => b.cells),
