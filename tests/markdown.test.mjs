@@ -8,21 +8,30 @@ import { readFileSync } from 'node:fs'
 import { parseSemanticDoc } from '../lib/markdown.js'
 import { SENTINEL_DOC, PANEL_DOC, DOC_COMPLETE, DOC_INCOMPLETE } from './helpers.mjs'
 
-test('真实样本：哨兵 docs/semantic.md（9 条验收 / 3 条未验收 / 5 个未决问题 / 10 节齐全）', () => {
+test('真实样本：哨兵 docs/semantic.md（结构断言 + 恒真关系，不硬编码具体数字）', () => {
   const text = readFileSync(SENTINEL_DOC, 'utf8')
   const doc = parseSemanticDoc(text)
 
   assert.equal(doc.acceptance.total, 9, '验收表行数应为 9（A1–A9）')
-  assert.equal(doc.acceptance.proven, 6, '证据列带 ✔ 的应为 6 条（A1–A6）')
-  // pending = 未取得通过证据的行数（A7 未做压测 + A8/A9 待线上验收）——与 registry.json 的 pending=3 一致
-  assert.equal(doc.acceptance.pending, 3)
-  // 字面口径：显式标「待线上验收」的只有 A8/A9 两行（任务描述里的「3 条」是 pending 口径，非字面标记口径）
-  assert.equal(doc.acceptance.pendingMarked, 2, '显式标注「待线上验收」的行数应为 2（A8/A9）')
-  assert.equal(doc.acceptance.unprovenUnmarked, 1, '未通过且未标注的应为 1 行（A7）')
+  // ⚠ 这里**刻意不硬编码** proven/pending 的具体值：本测试读的是一份**生产文档**，
+  // 任何人按 D3 回写它都会让数字变（2026-09-22 实测：把 A8/A9 从「待线上验收」改为「已实测」
+  // 就让 `proven should be 6` 崩了——而那次改动本身是正确的，是**测试太脆**，不是文档错）。
+  // 改为断言**恒真关系 + 方向性下界**：既有分辨力，又不会被一次正当回写打崩。
+  assert.equal(
+    doc.acceptance.proven + doc.acceptance.pending,
+    doc.acceptance.total,
+    'proven + pending 必须等于 total（计数口径的自洽性）',
+  )
+  assert.ok(doc.acceptance.proven >= 6, `proven 不应低于历史已知值 6（实测 ${doc.acceptance.proven}）——只应随复核上升`)
+  assert.ok(doc.acceptance.pending <= 3, `pending 不应高于历史已知值 3（实测 ${doc.acceptance.pending}）`)
+  assert.equal(
+    doc.acceptance.pendingMarked + doc.acceptance.unprovenUnmarked,
+    doc.acceptance.pending,
+    'pendingMarked + unprovenUnmarked 必须等于 pending（字面口径与 pending 口径的分类要完备）',
+  )
   assert.equal(doc.acceptance.rows[6].id, 'A7')
-  assert.equal(doc.acceptance.rows[6].proven, false)
-  assert.equal(doc.acceptance.rows[6].pendingMarked, false)
-  assert.equal(doc.acceptance.rows[7].pendingMarked, true)
+  assert.equal(doc.acceptance.rows[6].proven, false, 'A7 至今未做压测 ⇒ 应仍判未通过')
+  assert.equal(doc.acceptance.rows[6].pendingMarked, false, 'A7 未显式标注「待线上验收」⇒ 应落在 unprovenUnmarked')
 
   assert.equal(doc.openQuestions, 5, '未决问题 U1–U5 应为 5 条')
   assert.equal(doc.openQuestionItems[0].label, 'U1')

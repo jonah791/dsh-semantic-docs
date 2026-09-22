@@ -163,7 +163,11 @@ export function collectEntryFacts(entry: RegistryEntry, workspace: string, fs: F
 
   const implMissing: string[] = []
   const twinsMissing: string[] = []
+  // impl 与 twins **分开算**：twins 是"同语义副本"（文档），不是实现。
+  // 混算会让「编辑一份文档」点亮另一条语义的 D3（2026-09-22 实测：修 web-lifecycle 点亮了 wake-delivery）。
+  // 同时记下"最新那个文件是谁"——只报一个 mtime 值没法归因（三种误报成因都只能靠人工再查一遍）。
   let implLatest = 0
+  let implLatestPath: string | null = null
   for (const rel of entry.impl ?? []) {
     const abs = absOf(workspace, rel)
     if (!fs.isFile(abs)) {
@@ -171,8 +175,12 @@ export function collectEntryFacts(entry: RegistryEntry, workspace: string, fs: F
       continue
     }
     const m = fs.mtimeMs(abs)
-    if (m !== null && m > implLatest) implLatest = m
+    if (m !== null && m > implLatest) {
+      implLatest = m
+      implLatestPath = rel
+    }
   }
+  let twinsLatest = 0
   for (const rel of entry.twins ?? []) {
     const abs = absOf(workspace, rel)
     if (!fs.isFile(abs)) {
@@ -180,7 +188,7 @@ export function collectEntryFacts(entry: RegistryEntry, workspace: string, fs: F
       continue
     }
     const m = fs.mtimeMs(abs)
-    if (m !== null && m > implLatest) implLatest = m
+    if (m !== null && m > twinsLatest) twinsLatest = m
   }
 
   return {
@@ -190,6 +198,8 @@ export function collectEntryFacts(entry: RegistryEntry, workspace: string, fs: F
     implMissing,
     twinsMissing,
     implLatestMtimeMs: implLatest > 0 ? implLatest : null,
+    implLatestPath,
+    twinsLatestMtimeMs: twinsLatest > 0 ? twinsLatest : null,
     doc,
   }
 }

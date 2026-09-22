@@ -265,8 +265,16 @@ export interface EntryFacts {
   docReadError: string | null
   implMissing: string[]
   twinsMissing: string[]
-  /** impl + twins 中最新的 mtime（D3 用） */
+  /**
+   * **impl 落点**中最新的 mtime（D3 用）。
+   * ⚠ twins **不参与**：它们是"同语义副本"（文档），不是实现。
+   * 混算会让「编辑一份文档」点亮另一条语义的 D3（2026-09-22 实测：修 web-lifecycle 点亮了 wake-delivery）。
+   */
   implLatestMtimeMs: number | null
+  /** 上述最新 mtime 对应的 impl 相对路径——D3 消息里给出来，便于直接归因（只报一个 mtime 值等于把归因推给人）。 */
+  implLatestPath: string | null
+  /** twins（同语义副本）中最新的 mtime。**不参与 D3**，仅供排查展示。 */
+  twinsLatestMtimeMs: number | null
   doc: DocParse | null
 }
 
@@ -342,6 +350,9 @@ export function detectDrift(input: DriftInput): DriftIssue[] {
     }
 
     // ---- D3 实现比文档新 ----
+    // 判据域（2026-09-22 修正）：只用 **impl** 的 mtime，**不含 twins**（twins 是文档，不是实现）。
+    // 消息里必须带上"是哪个文件"——否则三种误报成因（impl 清单文件粒度 / 工作区未提交改动 /
+    // twins 被编辑）都只能靠人工再跑一遍 git log 才能分辨。
     if (
       docUsable &&
       facts.docMtimeMs !== null &&
@@ -351,10 +362,11 @@ export function detectDrift(input: DriftInput): DriftIssue[] {
       const suppressed = facts.doc !== null && facts.doc.needReview
       if (!suppressed) {
         const lagHours = Math.max(0, (nowMs - facts.docMtimeMs) / 3_600_000)
+        const who = facts.implLatestPath === null ? '（最新文件未知）' : ` ${facts.implLatestPath}`
         push(
           'D3',
           'warn',
-          `实现比文档新：impl 最新 mtime ${fmtTime(facts.implLatestMtimeMs)} > doc mtime ${fmtTime(facts.docMtimeMs)}（文档已 ${lagHours.toFixed(1)} 小时未动，且未标「待复核」）`,
+          `实现比文档新：impl 最新 mtime ${fmtTime(facts.implLatestMtimeMs)} > doc mtime ${fmtTime(facts.docMtimeMs)}（文档已 ${lagHours.toFixed(1)} 小时未动，且未标「待复核」）· 触发文件：${who}`,
           DRIFT_HINTS.D3,
         )
       }
