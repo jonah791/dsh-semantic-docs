@@ -21,13 +21,14 @@ import {
   absOf,
   applyRegistration,
   createNodeFs,
+  createNodeGit,
   factsAlignedWith,
   loadRegistryState,
   INDEX_REL,
   REGISTRY_REL,
   SCAN_ROOTS,
 } from './collect.ts'
-import { detectDrift, DRIFT_HINTS, STATUSES } from './registry.ts'
+import { detectDrift, suppressedBySharedAssembly, DRIFT_HINTS, STATUSES } from './registry.ts'
 import type { DriftIssue, EntryPatch, SemanticStatus } from './registry.ts'
 
 export const name = 'semantic-docs'
@@ -158,7 +159,7 @@ export function apply(ctx: Context, config: Config): void {
     async execute(args) {
       const workspace = ws()
       try {
-        const state = loadRegistryState(workspace, fs)
+        const state = loadRegistryState(workspace, fs, createNodeGit(workspace))
         const drift = detectDrift({
           entries: state.registry.entries,
           facts: factsAlignedWith(state),
@@ -300,7 +301,7 @@ export function apply(ctx: Context, config: Config): void {
         error: '',
       }
       try {
-        const state = loadRegistryState(workspace, fs)
+        const state = loadRegistryState(workspace, fs, createNodeGit(workspace))
         const record = state.records.find((r) => r.entry.id === id)
         if (record === undefined) {
           const known = state.records.map((r) => r.entry.id).join(', ')
@@ -384,7 +385,7 @@ export function apply(ctx: Context, config: Config): void {
       const workspace = ws()
       const onlyId = typeof args.id === 'string' && args.id.trim().length > 0 ? args.id.trim() : undefined
       try {
-        const state = loadRegistryState(workspace, fs)
+        const state = loadRegistryState(workspace, fs, createNodeGit(workspace))
         const facts = factsAlignedWith(state)
         const allIssues = detectDrift({
           entries: state.registry.entries,
@@ -409,6 +410,24 @@ export function apply(ctx: Context, config: Config): void {
         if (deprecated.length > 0) notes.push(`deprecated 条目不参与 D2/D3/D4/D6 告警（README §5）：${deprecated.join('、')}`)
         const suppressed = state.records.filter((r) => r.facts?.doc?.needReview === true).map((r) => r.entry.id)
         if (suppressed.length > 0) notes.push(`D3 被文档「待复核」标记抑制：${suppressed.join('、')}`)
+        // 成因 B 的「明确标注」半（2026-09-22 · t-c54b41c6）：未提交改动**不计入 D3**（未经提交核对），
+        // 但也不能就此消失——否则「工作区改了却没提交」这件事在外部完全不可见（§5.10 静默失败）。
+        // 成因 A 的「披露」半（2026-09-22 · t-c54b41c6）：共享装配点被抑制的条目必须点名，
+        // 否则「抑制」退化成静默（§5.17：跳过不等于健康）。判定与 D3 抑制同一个函数（唯一真源）。
+        const sharedSuppressed = state.records
+          .filter((r) => r.facts !== null && suppressedBySharedAssembly(r.facts, typeof r.entry.doc === 'string' ? r.entry.doc : ''))
+          .map((r) => r.entry.id)
+        if (sharedSuppressed.length > 0) {
+          notes.push(
+            `D3 被**共享装配点**判定抑制（触发提交同时更新了别的条目文档，疑非本条改动，不据此报 drift）：${sharedSuppressed.join('、')}；如有疑问请人工确认`,
+          )
+        }
+        const dirtyImpls = state.records.filter((r) => r.facts?.implDirty === true).map((r) => r.entry.id)
+        if (dirtyImpls.length > 0) {
+          notes.push(
+            `impl 工作区有**未提交**改动（不计入 D3——D3 只认已提交的改动）：${dirtyImpls.join('、')}；提交后再复核`,
+          )
+        }
         for (const r of state.records) {
           const reg = r.entry.acceptance ?? null
           const parsed = r.facts?.doc?.acceptance ?? null

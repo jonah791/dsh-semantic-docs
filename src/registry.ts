@@ -266,24 +266,51 @@ export interface EntryFacts {
   implMissing: string[]
   twinsMissing: string[]
   /**
-   * **impl 落点**中最新的 mtime（D3 用）。
+   * **impl 落点**中最新的 mtime。
    * ⚠ twins **不参与**：它们是"同语义副本"（文档），不是实现。
    * 混算会让「编辑一份文档」点亮另一条语义的 D3（2026-09-22 实测：修 web-lifecycle 点亮了 wake-delivery）。
+   * ⚠ 2026-09-22 二次修正（t-c54b41c6 成因 B）：mtime **降级为兜底与展示**——真源是下面的**提交**。
+   * 工作区未提交改动 / 行尾归一都会推新 mtime 而语义没变（实测受害 8 条）。
    */
   implLatestMtimeMs: number | null
   /** 上述最新 mtime 对应的 impl 相对路径——D3 消息里给出来，便于直接归因（只报一个 mtime 值等于把归因推给人）。 */
   implLatestPath: string | null
+  /** 文档最后一次**提交**的时刻（与 impl 提交比较出 D3）；git 不可用 ⇒ null。 */
+  docCommitMs?: number | null
+  /** impl 落点中**最新提交**的时刻；null = 无一纳入版本控制或 git 不可用。 */
+  implLatestCommitMs?: number | null
+  /** 上述提交的短 sha 与标题——D3 消息里给出，让「哪个提交触发的」一眼可见。 */
+  implLatestCommitSha?: string | null
+  implLatestCommitSubject?: string | null
+  /** 该提交触及的仓库相对路径全集（成因 A 归因用：见 D3 的「共享装配点」判定）。 */
+  implLatestCommitFiles?: string[]
+  /** impl 文件是否存在**未提交**的工作区改动（成因 B：不判 D3，改由调用方标注）。 */
+  implDirty?: boolean
   /** twins（同语义副本）中最新的 mtime。**不参与 D3**，仅供排查展示。 */
   twinsLatestMtimeMs: number | null
   doc: DocParse | null
 }
 
-export interface DriftIssue {
-  code: DriftCode
+export interface DriftIssue {  code: DriftCode
   severity: DriftSeverity
   id?: string
   message: string
   hint: string
+}
+
+/**
+ * 成因 A 的判定（**唯一真源**：D3 的抑制与 `semantic_check` 的 notes 都调它，不各写一遍）。
+ *
+ * 形状：impl 的最新提交**晚于**文档的最近提交（看起来是 drift），但该提交**同时更新了别的条目文档**
+ * ⇒ 这个文件很可能是**共享装配点**（`src/index.ts` 这类被多条语义登记的文件），改动多半不属于本条。
+ * ⇒ D3 **抑制**（夹具 1：同一文件两条语义，只报真变的那条），但**必须在 notes 里披露**
+ *   （§5.17：跳过不等于健康——抑制若无声，就退化成另一种静默失效）。
+ */
+export function suppressedBySharedAssembly(facts: EntryFacts, docRel: string): boolean {
+  if (facts.implLatestCommitMs == null || facts.docCommitMs == null) return false
+  if (facts.implLatestCommitMs <= facts.docCommitMs) return false
+  const files = facts.implLatestCommitFiles ?? []
+  return files.some((f) => /(^|\/)docs\/semantic.*\.md$/i.test(f) && f !== docRel)
 }
 
 export interface DriftInput {
@@ -350,25 +377,39 @@ export function detectDrift(input: DriftInput): DriftIssue[] {
     }
 
     // ---- D3 实现比文档新 ----
-    // 判据域（2026-09-22 修正）：只用 **impl** 的 mtime，**不含 twins**（twins 是文档，不是实现）。
-    // 消息里必须带上"是哪个文件"——否则三种误报成因（impl 清单文件粒度 / 工作区未提交改动 /
-    // twins 被编辑）都只能靠人工再跑一遍 git log 才能分辨。
-    if (
-      docUsable &&
-      facts.docMtimeMs !== null &&
-      facts.implLatestMtimeMs !== null &&
-      facts.implLatestMtimeMs > facts.docMtimeMs
-    ) {
+    // 判据域（2026-09-22 二次修正 · t-c54b41c6）：
+    //  · 真源 = **已提交**的改动（成因 B：工作区未提交改动 / 行尾归一都会推新 mtime 而语义没变，
+    //    实测受害 8 条：agent-browser / telegram-outbound / skill-forge + 5 条行尾归一）⇒ 不再报警；
+    //  · 触发提交**同时更新了别的条目的文档** ⇒ 疑为**共享装配点**（成因 A：`src/index.ts` 这类装配文件
+    //    天然被多条语义登记）⇒ 降级为 `info` 并把提交归因写进消息，而不是照样报 warn；
+    //  · git 不可用 ⇒ **退回 mtime 判据**，并在消息里明说「未经版本控制核对」（不静默换判据）。
+    const committedBasis = facts.implLatestCommitMs != null && facts.docCommitMs != null
+    const fires = committedBasis
+      ? facts.implLatestCommitMs! > facts.docCommitMs!
+      : facts.implLatestMtimeMs !== null && facts.docMtimeMs !== null && facts.implLatestMtimeMs > facts.docMtimeMs
+    if (docUsable && fires) {
       const suppressed = facts.doc !== null && facts.doc.needReview
       if (!suppressed) {
-        const lagHours = Math.max(0, (nowMs - facts.docMtimeMs) / 3_600_000)
+        const newerMs = committedBasis ? facts.implLatestCommitMs! : (facts.implLatestMtimeMs as number)
+        const olderMs = committedBasis ? facts.docCommitMs! : (facts.docMtimeMs as number)
+        const lagHours = Math.max(0, (nowMs - olderMs) / 3_600_000)
         const who = facts.implLatestPath === null ? '（最新文件未知）' : ` ${facts.implLatestPath}`
-        push(
-          'D3',
-          'warn',
-          `实现比文档新：impl 最新 mtime ${fmtTime(facts.implLatestMtimeMs)} > doc mtime ${fmtTime(facts.docMtimeMs)}（文档已 ${lagHours.toFixed(1)} 小时未动，且未标「待复核」）· 触发文件：${who}`,
-          DRIFT_HINTS.D3,
-        )
+        const basis = committedBasis
+          ? 'impl 最近提交'
+          : 'impl 最新 mtime（**未经版本控制核对**：git 不可用或该文件未纳入版本控制）'
+        const attr = facts.implLatestCommitSha
+          ? ` · 触发提交 ${facts.implLatestCommitSha}「${facts.implLatestCommitSubject ?? ''}」`
+          : ''
+        // 成因 A：共享装配点 ⇒ **抑制本条 D3**（不报警），由 semantic_check 的 notes 披露同一判定结果。
+        // ⚠ 不能 `return`——那会连本条后面的 D4/D6 检查一起跳过（一个缺陷换另一个）。
+        if (!suppressedBySharedAssembly(facts, typeof entry.doc === 'string' ? entry.doc : '')) {
+          push(
+            'D3',
+            'warn',
+            `实现比文档新：${basis} ${fmtTime(newerMs)} > doc ${fmtTime(olderMs)}（文档已 ${lagHours.toFixed(1)} 小时未动，且未标「待复核」）· 触发文件：${who}${attr}`,
+            DRIFT_HINTS.D3,
+          )
+        }
       }
     }
 
