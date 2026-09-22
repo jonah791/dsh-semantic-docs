@@ -162,10 +162,13 @@ src/index.ts:apply ── ws = config.workspace ?? process.cwd()
 | A9 | 未注册的新文档会被 D5 点名（本批 5 个插件即实例） | `semantic_check` 的 notes 里列出未注册的 `self-plugins/*/docs/semantic.md` | 待验收 |
 | A10 | 写入原子（tmp → rename，无半截文件） | `grep -n "renameSync" src/collect.ts`（L111）+ 并发读压测未做 → 该项**只能算半验** | 待验收 |
 | A11 | 表格被空行切成多块时，**续块的首数据行不被当表头吞掉**（表头判据 = 第二行是分隔行） | `tests/markdown.test.mjs`「表格中间的空行不得吃掉数据行（续块无表头——2026-09-22 实测缺陷）」+「有表头的正常表格仍不吃数据行（修正不得反噬正常形态）」；全量对账：64 份注册文档解析 `total` 合计 **961** == 人眼口径 961（mismatch 0） | 已实测 |
+| A12 | **D3 的真源是「已提交」而非 mtime**：工作区未提交改动 / 行尾归一致 mtime 变新 ⇒ **不报** | `tests/d3-attribution.test.mjs`「成因 B 尸体样本…不得报 D3」+ 对照组「真有新提交 ⇒ 照常报 D3」；**进程外实测**（真工作区 64 条，同语料 A/B）：旧判据 8 条 → 新判据 7 条，差额 = `semantic-docs-tooling` | 已实测 |
+| A13 | **共享装配点抑制**：触发提交同时更新了**别的条目**文档 ⇒ 抑制本条 D3，且在 notes 点名披露（不静默） | `tests/d3-attribution.test.mjs`「成因 A 尸体样本…被抑制」+「非共享对照仍是 warn」+ `suppressedBySharedAssembly` 边界（碰的是**本条自己的**文档 ⇒ 不算） | 已实测（单测）；⚠ 真实语料当前**无命中**（A 的活体面未出现），如实标注 |
+| A14 | git 不可用/未纳入版本控制 ⇒ **退回 mtime 判据且消息自带范围标注**（不静默换判据） | `tests/d3-attribution.test.mjs`「git 不可用 ⇒ 退回 mtime…消息必须明说『未经版本控制核对』」 | 已实测 |
 
 ## 8 · 与实现的关系
 
-- 主实现：`src/index.ts`（工具面）；分层：`markdown.ts`（纯解析）→ `registry.ts`（纯逻辑）→ `collect.ts`（IO 适配，`FsLike` 注入）→ `index.ts`（Cordis 工具面）。时间与文件系统**都是注入的**，故 `tests/*.test.mjs` 可对 `lib/` 产物离线跑。
+- 主实现：`src/index.ts`（工具面）；分层：`markdown.ts`（纯解析）→ `registry.ts`（纯逻辑）→ `collect.ts`（IO 适配，`FsLike` + `GitLike` **双注入**）→ `index.ts`（Cordis 工具面）。时间与文件系统**都是注入的**，故 `tests/*.test.mjs` 可对 `lib/` 产物离线跑。`GitLike` 缺省 `createNullGit()`（D3 退回 mtime），生产由 `index.ts` 注入 `createNodeGit(workspace)`（按仓库聚合一次 `git log --name-only`，整个 state 装载共用一份缓存）。
 - 规范主副本：`docs/semantics/README.md`（系统契约）+ `docs/semantics/templates/semantic.md`（模板）——本插件是它们的**执行者**，不是它们的替代；规范变更须同步本文件 §4.2/§4.3 的字面常量。
 - 同语义副本：无（本插件是 D1–D6 的唯一实现）。
 - 未实现/未验证部分（显式标注）：
@@ -187,6 +190,14 @@ src/index.ts:apply ── ws = config.workspace ?? process.cwd()
   - 判据：新增两条单测，**先确认修正前会红**（RED 已记录：期望 `total=4`，实得 3）；修后全套 **43/43 pass**；**全量对账**：64 份注册文档解析 `total` 合计 **961**，与「逐块：有分隔行减 2、无分隔行全计」的人眼口径 **961** 完全一致（mismatch 0）。
   - **我的量尺也错了两次（同批留档）**：① 先用 `| A\d+ |` 计数 ⇒ 把 `pipeRows=0` 的文档（实际用 `| 1 |` / `| U1 |` 编号）误判成漏行；② 改用「管道行 − 分隔行」⇒ **漏减表头**，把 4 份**完全正常**的文档判成 MISMATCH（其中 `dream-tavern` 的「表头」是 `| 轮 | 请求字数 |…` 这类数据化表头）。⇒ 教训：**判定他人漏行之前，先证明自己的计数口径与解析器语义等价**——两次都是尺子错，不是被量对象错。
   - 方法论：**新判据先喂已知坏样本、确认它会亮**（AGENTS.md §5.9 规则 2，同日布线）——本次严格执行 RED → 修 → GREEN，因此「修好了」是读数而不是感觉。
+
+- **2026-09-22 判据域修正：D3 的真源从 mtime 换成「已提交」（t-c54b41c6 成因 A/B）**
+  - 语义**被修正（判据域）**：D3 原为「impl 最新 **mtime** > doc mtime」，而 mtime 会被**未提交改动**与**行尾归一（renormalize）**推新而语义没变 ⇒ 空报。真源改为**最后一次提交**：新增 `GitLike` seam（`collect.ts`，按仓库聚合一次 `git log --name-only` 并全 state 共用缓存；有界窗口 `-n3000`，查不到即返回 `null` 并**退回 mtime 且消息里明说「未经版本控制核对」**——不静默换判据）。
+  - 语义**被补充（成因 A 的处置）**：触发提交**同时更新了别的条目文档** ⇒ 判为**共享装配点**（`src/index.ts` 这类被多条语义登记的文件）⇒ **抑制本条 D3**，并在 `semantic_check` 的 notes 里**点名披露**（抑制若无声 = 另一种静默失效，§5.17）。判定抽成 `suppressedBySharedAssembly`（**唯一真源**：抑制与 notes 调同一个函数）。
+  - 语义**被修正（我的实现自伤，当场改掉）**：抑制一度写成 `return` ⇒ 会连本条后面的 **D4/D6 检查一起跳过**（一个缺陷换另一个）⇒ 改为条件包裹。
+  - 判据：单测 **43 → 49/49**（新增 6，见 A12–A14）；**进程外运行期实测**（真工作区 64 条）：新判据 D3 = 7 条且全部有真实新提交；5 条「有未提交改动」的条目**一条都不在 D3 里**。
+  - ⚠ **读数范围更正（我自己的措辞错）**：那 5 条是「修复覆盖的**候选集**」，而本语料上旧判据**实测**只多报 1 条（`semantic-docs-tooling`）——其余 4 条的 doc mtime 本就更晚、从未触发过 D3。**不把候选集说成实测差额**（同族纪律：读数必须自带范围）。
+  - 另记一处低级自伤：一度把 JSDoc 写成 `mtime/**提交**/…`，其中 `*/` **提前闭合注释**导致 tsc 报错——注释里写 `/**` 序列要当心。
 
 ## 10 · 未决问题
 
