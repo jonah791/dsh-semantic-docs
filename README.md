@@ -1,8 +1,8 @@
 <!--
   DSH 插件生态公约声明（plugin-ecosystem-convention · 组合优先/声明清晰/兼容优先）
-  purpose: 语义文档系统——把「每个能力都有一份说清自身语义的文档」做成可执行、可检查的设施：注册表读写 + 状态按证据重判 + D1–D6 drift 检查 + 人类索引生成
+  purpose: 语义文档系统——把「每个能力都有一份说清自身语义的文档」做成可执行、可检查的设施：注册表读写 + 状态按证据重判 + D1–D7 drift 检查 + 验收快照对账 + 人类索引生成
   inject: 'tools'
-  tools: semantic_list,semantic_get,semantic_check,semantic_register
+  tools: semantic_list,semantic_get,semantic_check,semantic_register,semantic_unregister
   runtime: host-only（纯 Node 文件系统读写；无网络、无凭据）
   envDeps: 无（只需可写的 workspace 目录）
   boundary: **只报不改**（无门禁、不阻断）；不写文档正文（注册表只存引用）；**不是沙箱/权限边界**——它读写 workspace 内文件，不校验调用者
@@ -14,10 +14,10 @@
   <a href="https://github.com/jonah791/dsh-semantic-docs"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version"></a>
   <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
-  <img src="https://img.shields.io/badge/tests-41%20passed-brightgreen" alt="tests">
+  <img src="https://img.shields.io/badge/tests-78%20passed-brightgreen" alt="tests">
 </p>
 
-**一句话**：把「每个能力都有一份说清自身语义的文档」变成**可执行、可检查**的设施——4 个工具读写语义文档注册表、按证据**重判**条目状态、跑 D1–D6 drift 检查、生成人类索引。
+**一句话**：把「每个能力都有一份说清自身语义的文档」变成**可执行、可检查**的设施——5 个工具读写语义文档注册表、按证据**重判**条目状态、跑 D1–D7 drift 检查 + 验收快照对账、生成人类索引。
 
 **为什么值得用**：文档最危险的形态不是「没有」，而是**声称与事实不符**——注册表写着 `verified`，实际验收还有 pending；文档写着路径，那个文件早被搬走；实现改了，语义文档还停在上个版本。这类漂移**靠自觉发现不了**，靠人审又会漏。本插件把「声明」与「证据」（路径存在性、验收统计、mtime、必备结构节）分开维护，每次调用**现算**状态并报出判据理由——但它**只报不改**：报出来的是信号，处置归主体。
 
@@ -27,8 +27,9 @@
 |------|------|---------|
 | `semantic_list` | 列出语义文档注册表条目（可按 `status`/`owner` 过滤），并对每条**现算状态**（声明 ≠ 事实：按 `impl` 落点 + 文档解析出的验收 `pending` 重判） | 读注册表 + 现算 + 每条 drift 代码；`status` 过滤作用于**声明**，不是现算值 |
 | `semantic_get` | 取单条语义文档条目详情：声明状态 + 现算状态（含判据理由）、文档大纲（标题树）、可证伪验收统计（总数/已证/待验）、未决问题数、`impl`/`twins` 落点存在性 | id 不存在 → `ok:false` 并列出已知 id（不静默返回空） |
-| `semantic_check` | 语义文档 drift 检查（D1 路径不存在 / D2 状态与证据不符 / D3 实现比文档新 / D4 必备结构缺节 / D5 存在未注册的 `docs/semantic*.md` / D6 缺「实践修订记录」小节）+ 建议动作 | **只报不改**；缺省查全部条目，可传 `id` 单查；返回 `summary` + `actions` + `notes` |
-| `semantic_register` | 登记/更新一条语义文档条目（幂等 upsert，同 id 不重复）并重新生成 `docs/semantics/INDEX.md` | 不写文档正文（I2：文档随代码）；`acceptance`/`openQuestions` 由文档解析**自动回填**；注册表坏 JSON → **拒绝覆盖**（坏注册表是证据，不许静默重建） |
+| `semantic_check` | 语义文档 drift 检查（D1 路径不存在 / D2 状态与证据不符 / D3 实现比文档新 / D4 必备结构缺节 / D5 存在未注册的 `docs/semantic*.md` / D6 缺「实践修订记录」小节 / D7 验收格近义词误读）+ **验收快照对账** + 建议动作 | **只报不改**；缺省查全部条目，可传 `id` 单查；返回 `summary`（含快照对账计数）+ `actions` + `notes` |
+| `semantic_register` | 登记/更新一条语义文档条目（幂等 upsert，同 id 不重复）并重新生成 `docs/semantics/INDEX.md` | 不写文档正文（I2：文档随代码）；`acceptance`/`openQuestions` 按**三来源**写入（`doc` 回填 / `explicit` 显式 / `untouched` 不动）——doc 缺省时**回退条目既有 doc**，解析不可得**保留原值、不写 `null`**；注册表坏 JSON → **拒绝覆盖**（坏注册表是证据，不许静默重建） |
+| `semantic_unregister` | 注销一条条目：从 `docs/semantics/registry.json` 移除并重生成 `INDEX.md` | **只删注册表条目，不删文档正文**（正文归 `plugin_purge`）；`dryRun:true` 先看 `referencedBy` 悬空引用；id 未命中 → 报错不静默 |
 
 **drift 判据**：
 
@@ -36,10 +37,13 @@
 |------|------|-------|
 | D1 | `doc` / `impl` / `twins` 路径不存在（含文档读取/解析失败） | error |
 | D2 | 状态与证据不符（`verified` 但 `pending>0` 或 `total=0`；`implemented` 但 `impl` 全空） | error |
-| D3 | 实现比文档新（impl 最新 mtime > 文档 mtime 且文档未标「待复核」） | warn |
+| D3 | 实现比文档新（真源＝**已提交**的改动；git 不可用或未纳入版本控制时退回 mtime 且消息里明说） | warn |
 | D4 | 必备结构缺节（10 项，按**标题语义**匹配） | error |
 | D5 | 磁盘存在 `docs/semantic*.md` 但未注册（排除 `docs/semantics/**` 系统自身目录） | warn |
 | D6 | 注册表指向的文档不含「实践修订记录」小节（实践回修载体缺失） | error |
+| D7 | 验收表最后一格以**词表外近义词开头**（「已证 / 已验证 / 已验收」…）⇒ 人读已证、机器读未验（**只报不拦**，不改任何状态判定） | warn |
+
+**快照对账（非 D 码，走 `notes` + `summary`）**：注册表 `acceptance` 与文档解析逐条对账，比 **`total` 与 `pending`** 两个字段；**快照 `null` 单独报「缺失」**（不可对账 ≠ 已对齐）；文档不可用 ⇒ 不报（那是 D1 的域）。
 
 **状态模型**：`draft → implemented → verified`（`deprecated` 保留留痕，只查 D1）。声明**低于**证据（可晋升）只提示 `⤴可晋升`，**不算 drift**——因为「draft 但 impl 已存在」也可能是实现进行中（语义精确性：不许用自己的判定掩盖合法状态）。
 
@@ -70,7 +74,7 @@
 
 | 项 | 默认 | 说明 |
 |----|------|------|
-| `enabled` | `true` | **当前是纯声明**：置 `false` 时 4 个工具仍注册（工具本身不做开关判断），见 `docs/semantic.md` §10 U1 |
+| `enabled` | `true` | **当前是纯声明**：置 `false` 时 5 个工具仍注册（工具本身不做开关判断），见 `docs/semantic.md` §10 U1 |
 | `workspace` | `process.cwd()` | 注册表/索引/扫描根的基准目录；建议由组合层显式给出 |
 
 **路径约定**（固定，不改配置）：注册表 `<workspace>/docs/semantics/registry.json`（唯一真源）· 索引 `<workspace>/docs/semantics/INDEX.md`（生成物，**可重放，勿手改**）· 能力文档习惯命名 `docs/semantic.md`（一仓多能力用 `docs/semantic-<topic>.md`）。
@@ -120,19 +124,23 @@ node scripts/smoke.mjs && ls -l <workspace>/docs/semantics/
 npm test        # = node --test "tests/*.test.mjs"（跑 lib/ 产物，与运行时同源）
 ```
 
-**41 例离线测试**（41/41 通过）：
+**76 例离线测试**（76/76 通过）：
 
-- `tests/markdown.test.mjs` —— 纯解析层：标题树、必备节语义匹配、验收清单解析、`needReview` 标记；
+- `tests/markdown.test.mjs` —— 纯解析层：标题树、必备节语义匹配、验收清单解析、`needReview` 标记、D7 近义词；
 - `tests/status.test.mjs` —— 状态重判：`verified` 但 `pending>0` → D2；证据够而声明低 → 只提示晋升；`deprecated` 不参与重判；
-- `tests/drift.test.mjs` —— D1–D6 逐码判据，含 D4 缺节逐点名与 D3 被 `needReview` 抑制的分支；
+- `tests/drift.test.mjs` —— D1–D7 逐码判据，含 D4 缺节逐点名与 D3 被 `needReview` 抑制的分支；
+- `tests/d3-attribution.test.mjs` —— D3 成因 A/B：共享装配点抑制、工作区未提交改动不报、git 不可用退回 mtime 且消息明说；
 - `tests/registry.test.mjs` —— schema 校验、非法条目 partition 到 `skipped` + `schemaIssues`、INDEX 渲染可重放；
-- `tests/corpse.test.mjs` —— **尸体测试**：注册表不存在 → 抛错并带绝对路径；坏 JSON → `RegistryParseError`；`semantic_register` 遇坏注册表 → **拒绝覆盖**；D5 排除 `docs/semantics/**`。
+- `tests/corpse.test.mjs` —— **尸体测试**：注册表不存在 → 抛错并带绝对路径；坏 JSON → `RegistryParseError`；`semantic_register` 遇坏注册表 → **拒绝覆盖**；D5 排除 `docs/semantics/**`；
+- `tests/unregister.test.mjs` —— 注销：命中 / 未命中不写盘 / 悬空引用扫出 / 坏注册表拒绝；
+- `tests/snapshot.test.mjs` —— **验收快照对账**：缺失 ≠ 已对齐、`total`/`pending` 任一不一致都报、两边一致不报（对照）；
+- `tests/doc-parity.test.mjs` —— **文档 ↔ 源码对账**：工具集合（源码 / §4.2 / README 声明头 / README 能力表 / §3 图）、测试清单、drift 码表四类漂移门禁。
 
 **离线单测不需要网络、不需要挂载插件、不需要 WSL**：时间与文件系统都是**注入**的（`FsLike`），纯逻辑层可直跑 `lib/` 产物。补充冒烟：`node scripts/smoke.mjs`（直测 `execute` + `render` + `output.schema` 一致性，不需挂载）。
 
 ## 设计要点
 
-- **分层是测试性的前提**：`markdown.ts`（纯函数解析）→ `registry.ts`（纯逻辑：schema/状态判定/D1–D6/INDEX 渲染）→ `collect.ts`（IO 适配，`FsLike` 注入）→ `index.ts`（Cordis 工具面）。**时间与文件系统都是注入的**，所以能离线对产物跑测试——新增判定逻辑必须落在纯逻辑层，不要写进工具闭包。
+- **分层是测试性的前提**：`markdown.ts`（纯函数解析）→ `registry.ts`（纯逻辑：schema/状态判定/D1–D7/快照对账/INDEX 渲染）→ `collect.ts`（IO 适配，`FsLike` 注入）→ `index.ts`（Cordis 工具面）。**时间与文件系统都是注入的**，所以能离线对产物跑测试——新增判定逻辑必须落在纯逻辑层，不要写进工具闭包。
 - **声明与事实分离**：注册表存的是**声明**；每次调用按证据**现算**。二者不一致就报 drift，而不是自动改写声明——「自动把状态改成一致」会掩盖问题（且会破坏「坏注册表是证据」的原则）。
 - **fail-closed 的 `pending` 口径**：`acceptance.pending` = 未取得通过证据的验收行数（`total - proven`），而非仅统计字面标「待线上验收」的行数；字面口径另以 `pendingMarked` 单独暴露（两面都可见，避免口径漂移）。
 - **写入原子**：注册表与索引均 tmp → rename，避免读到半截文件。
@@ -148,8 +156,8 @@ npm test        # = node --test "tests/*.test.mjs"（跑 lib/ 产物，与运行
 
 | 文档 | 内容 |
 |------|------|
-| [`docs/semantic.md`](docs/semantic.md) | **权威契约**：定位与反定位、术语、契约（配置与路径约定 + 状态→裁决表 + 调用点清单）、可证伪验收清单（A1–A10）、未决问题（U1–U6） |
-| `docs/semantics/README.md`（工作区内） | 语义文档**系统规范**（路径约定、必备 10 节、状态模型、D1–D6 定义、模板） |
+| [`docs/semantic.md`](docs/semantic.md) | **权威契约**：定位与反定位、术语、契约（配置与路径约定 + 状态→裁决表 + 快照三来源 + 调用点清单）、可证伪验收清单（A1–A17）、未决问题（U1–U6） |
+| `docs/semantics/README.md`（工作区内） | 语义文档**系统规范**（路径约定、必备 10 节、状态模型、D1–D7 定义、模板） |
 | [alice-digital-life](https://github.com/jonah791/alice-digital-life) | 本插件所属生态的中心索引（全部自研插件） |
 | 技能 `semantic-doc-first` / `dsh-plugin-development` | 语义文档优先开发模式（先写「是什么」再动手）、插件开发契约 |
 
