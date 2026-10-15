@@ -1,11 +1,12 @@
 /**
  * dsh-semantic-docs · Cordis 插件（工具面）
  *
- * 四个工具（契约：docs/semantics/README.md §8）：
- *   semantic_list      列出条目 + 现算状态（可按 status/owner 过滤）
- *   semantic_get       单条详情 + 文档大纲 + 验收统计
- *   semantic_check     D1–D6 drift 检查 + 建议动作（**只报不改**）
- *   semantic_register  upsert 注册表 + 重新生成 INDEX.md（幂等）
+ * 五个工具（契约：docs/semantics/README.md §8）：
+ *   semantic_list       列出条目 + 现算状态（可按 status/owner 过滤）
+ *   semantic_get        单条详情 + 文档大纲 + 验收统计
+ *   semantic_check      D1–D7 drift 检查 + 快照对账 + 建议动作（**只报不改**）
+ *   semantic_register   upsert 注册表 + 重新生成 INDEX.md（幂等）
+ *   semantic_unregister 注销条目（只删注册表条目，不删文档正文）
  *
  * 纪律：
  *   - 只报不改：semantic_check 绝不改文件；处置归主体（主人/爱丽丝）
@@ -20,6 +21,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   absOf,
   applyRegistration,
+  applyRemoval,
   createNodeFs,
   createNodeGit,
   factsAlignedWith,
@@ -28,7 +30,15 @@ import {
   REGISTRY_REL,
   SCAN_ROOTS,
 } from './collect.ts'
-import { detectDrift, suppressedBySharedAssembly, DRIFT_HINTS, STATUSES } from './registry.ts'
+import {
+  compareAcceptanceSnapshot,
+  detectDrift,
+  removeEntry,
+  suppressedBySharedAssembly,
+  DRIFT_CODES,
+  DRIFT_HINTS,
+  STATUSES,
+} from './registry.ts'
 import type { DriftIssue, EntryPatch, SemanticStatus } from './registry.ts'
 
 export const name = 'semantic-docs'
@@ -273,6 +283,12 @@ export function apply(ctx: Context, config: Config): void {
           `  未决问题：${String(v.openQuestions ?? 0)}`,
           `  owners：${((e.owners ?? []) as string[]).join(', ') || '—'} ｜ impl：${((e.impl ?? []) as string[]).length} 个落点`,
         ]
+        if (Number(a.nearMiss ?? 0) > 0) {
+          head.push(
+            `  ⚠ 近义词误读 ${String(a.nearMiss)} 条：最后一格用了**词表外**的写法（如「已证 / 已验证 / 已验收」）` +
+              '——机器读作**未验**。改写成 `✔ 已实测`（✔ 在最后一列）或「待线上验收」（README §4.1）',
+          )
+        }
         if (questions.length > 0) head.push(`  未决问题清单：${questions.map((q) => `${q.label} ${q.text}`).join(' ｜ ')}`)
         if (outline.length > 0) {
           head.push(
@@ -341,7 +357,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'semantic_check',
     description:
-      '语义文档 drift 检查（D1 路径不存在 / D2 状态与证据不符 / D3 实现比文档新 / D4 必备结构缺节 / D5 存在未注册的 docs/semantic*.md / D6 缺「实践修订记录」小节）' +
+      '语义文档 drift 检查（D1 路径不存在 / D2 状态与证据不符 / D3 实现比文档新 / D4 必备结构缺节 / D5 存在未注册的 docs/semantic*.md / D6 缺「实践修订记录」小节 / D7 验收格近义词误读）' +
+      ' + **验收快照对账**（注册表 acceptance ↔ 文档解析；缺失与不一致都报，不把「无法对账」当「已对齐」）' +
       ' + 建议动作。**只报不改**：修复处置归主体。缺省检查全部条目，可传 id 只查一条。',
     parameters: {
       id: { type: 'string', description: '只检查该条目 id（缺省 = 全部条目）' },
@@ -371,7 +388,7 @@ export function apply(ctx: Context, config: Config): void {
         const head = `语义文档 drift 检查（${String(v.scope ?? '全部')} · 检查 ${String(v.checked ?? 0)} 条）· ${String(v.registryPath ?? '')}\n${String(v.summary ?? '')}`
         if (issues.length === 0) {
           const tail = notes.length > 0 ? `\n\n注：\n- ${notes.join('\n- ')}` : ''
-          return [{ type: 'text', text: `${head}\n未发现 drift（D1–D6 全过）。${tail}` }]
+          return [{ type: 'text', text: `${head}\n未发现 drift（D1–D7 全过）。${tail}` }]
         }
         const lines = issues.map(
           (i) => `${i.severity === 'error' ? '✖' : '⚠'} ${i.code}${i.id === undefined ? '' : ` [${i.id}]`} ${i.message}`,
@@ -428,30 +445,34 @@ export function apply(ctx: Context, config: Config): void {
             `impl 工作区有**未提交**改动（不计入 D3——D3 只认已提交的改动）：${dirtyImpls.join('、')}；提交后再复核`,
           )
         }
-        for (const r of state.records) {
-          const reg = r.entry.acceptance ?? null
-          const parsed = r.facts?.doc?.acceptance ?? null
-          if (reg === null || parsed === null) continue
-          if ((reg.pending ?? null) !== parsed.pending) {
-            notes.push(
-              `注册表验收快照与文档解析不一致 [${r.entry.id}]：注册表 pending=${String(reg.pending ?? '—')}，文档 pending=${parsed.pending}（用 semantic_register 回填）`,
-            )
-          }
-        }
+        // 验收快照对账（2026-10-09 · t-cdb92e72）：**「不可对账」不是「已对齐」**。
+        // 旧判据 `if (reg === null || parsed === null) continue` 把两种情况一起静默——
+        // 而 `reg === null` 恰是写侧缺陷（不带 doc 的注册把快照清成 null）的产物
+        // ⇒ 缺陷把告警关掉，输出看起来反而更干净。判定逻辑在 registry.ts（纯函数，可单测）。
+        const snapshotHits = state.records
+          .map((r) =>
+            compareAcceptanceSnapshot(r.entry.id, r.entry.acceptance ?? null, r.facts?.doc?.acceptance ?? null),
+          )
+          .filter((h): h is NonNullable<typeof h> => h !== null)
+        for (const hit of snapshotHits) notes.push(hit.message)
         if (state.unregisteredDocs.length > 0) notes.push(`D5 未注册文档：${state.unregisteredDocs.join('、')}`)
         notes.push(
           `D5 扫描根：${SCAN_ROOTS.map((r) => `${workspace.replace(/\\/g, '/')}/${r}`).join(' | ')}（排除 docs/semantics/**）`,
         )
 
         const actions: string[] = []
-        for (const code of ['D1', 'D2', 'D3', 'D4', 'D5', 'D6'] as const) {
+        // 码表**从 DRIFT_CODES 派生**，不手写枚举：手写列表在判据扩张时静默失效
+        // ——2026-10-09 实测，D7 上线后既没进 actions 也没进 summary ⇒ 我写的修复指引（DRIFT_HINTS.D7）
+        // **没有任何界面会显示它**。同一形状的第四次：枚举式清单注定在命名空间扩张时静默失效。
+        for (const code of DRIFT_CODES) {
           const hits = counts.byCode[code] ?? 0
           if (hits > 0) actions.push(`${code}（${hits} 处）：${DRIFT_HINTS[code]}`)
         }
 
         const summary =
           `error ${counts.error} · warn ${counts.warn} · ` +
-          ['D1', 'D2', 'D3', 'D4', 'D5', 'D6'].map((c) => `${c}×${counts.byCode[c] ?? 0}`).join(' · ')
+          DRIFT_CODES.map((c) => `${c}×${counts.byCode[c] ?? 0}`).join(' · ') +
+          ` · 快照对账×${snapshotHits.length}`
 
         return {
           ok: true,
@@ -515,6 +536,8 @@ export function apply(ctx: Context, config: Config): void {
           registryPath: { type: 'string' },
           indexMdPath: { type: 'string' },
           acceptanceApplied: { type: 'boolean' },
+          snapshotSource: { type: 'string' },
+          snapshotNote: { type: 'string' },
           entry: { type: 'json' },
           error: { type: 'string' },
         },
@@ -522,15 +545,20 @@ export function apply(ctx: Context, config: Config): void {
       render: (_a: unknown, v: any) => {
         if (v.ok !== true) return [{ type: 'text', text: `登记失败：${String(v.error ?? '')}` }]
         const e = v.entry ?? {}
-        const acc =
-          v.acceptanceApplied === true
-            ? '（acceptance/openQuestions 已从文档解析回填）'
-            : '（未找到文档，acceptance 保持手写占位）'
+        const a = e.acceptance ?? null
+        // 旧文案说的是「acceptance 保持手写占位」，而实现把它写成了 null —— **渲染层在说假话**
+        // （2026-10-09 · t-cdb92e72）。现在只报**注册表里真实的值**。
+        const accText =
+          a === null
+            ? 'acceptance=**null**（注册表无验收快照 ⇒ semantic_check 会报「快照缺失」，不是「已对齐」）'
+            : `acceptance=${String(a.proven ?? '—')}/${String(a.pending ?? '—')}/${String(a.total ?? '—')}`
         return [
           {
             type: 'text',
             text:
-              `已${v.action === 'created' ? '新建' : '更新'}条目 [${String(v.id)}] · ${String(e.title ?? '')} · 状态 ${String(e.status ?? '')} ${acc}\n` +
+              `已${v.action === 'created' ? '新建' : '更新'}条目 [${String(v.id)}] · ${String(e.title ?? '')} · 状态 ${String(e.status ?? '')}\n` +
+              `快照：${accText}（来源 ${String(v.snapshotSource ?? '—')}）\n` +
+              `· ${String(v.snapshotNote ?? '')}\n` +
               `注册表：${String(v.registryPath ?? '')}（共 ${String(v.entryCount ?? 0)} 条）\n索引：${String(v.indexMdPath ?? '')}`,
           },
         ]
@@ -547,6 +575,8 @@ export function apply(ctx: Context, config: Config): void {
         registryPath: absOf(workspace, REGISTRY_REL),
         indexMdPath: absOf(workspace, INDEX_REL),
         acceptanceApplied: false,
+        snapshotSource: '',
+        snapshotNote: '',
         entry: toJson(null),
         error: '',
       }
@@ -579,6 +609,109 @@ export function apply(ctx: Context, config: Config): void {
           registryPath: outcome.registryPath,
           indexMdPath: outcome.indexPath,
           acceptanceApplied: outcome.acceptanceApplied,
+          snapshotSource: outcome.snapshotSource,
+          snapshotNote: outcome.snapshotNote,
+          entry: toJson(outcome.entry),
+          error: '',
+        }
+      } catch (err) {
+        return { ...empty, error: errText(err) }
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'semantic_unregister',
+    description:
+      '注销一条语义文档条目：从 docs/semantics/registry.json 移除该条目并重新生成 INDEX.md。'
+      + '**只删注册表条目，不删文档正文**——正文属插件目录，归退役流程（plugin_purge）管。'
+      + '删除**不可逆**：先用 dryRun=true 看 referencedBy（仍指向该条目文档路径的其他条目），确认无悬空引用再删。'
+      + 'id 未命中 ⇒ 报错（不静默当成功）；注册表坏 JSON ⇒ 拒绝覆盖（坏注册表是证据）。',
+    parameters: {
+      id: { type: 'string', required: true, description: '要注销的条目 id（如 red-team）' },
+      dryRun: { type: 'boolean', description: 'true = 只报告将被删的条目与悬空引用，不写盘' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          dryRun: { type: 'boolean', required: true },
+          id: { type: 'string', required: true },
+          removed: { type: 'boolean', required: true },
+          entryCount: { type: 'number', required: true },
+          registryPath: { type: 'string', required: true },
+          indexMdPath: { type: 'string', required: true },
+          referencedBy: { type: 'array', required: true, items: { type: 'object', additionalProperties: true } },
+          entry: { type: 'json' },
+          error: { type: 'string', required: true },
+        },
+      },
+      render: (_a: unknown, v: any) => {
+        if (v.ok !== true) return [{ type: 'text', text: `注销失败：${String(v.error ?? '')}` }]
+        if (v.removed !== true) {
+          return [{ type: 'text', text: `未注销：注册表里没有 id=${String(v.id)}（当前共 ${String(v.entryCount)} 条）` }]
+        }
+        const e = v.entry ?? {}
+        const refs = Array.isArray(v.referencedBy) ? v.referencedBy : []
+        const lines = [
+          `${v.dryRun === true ? '【干跑】' : '【已注销】'}条目 [${String(v.id)}] · ${String(e.title ?? '')} · 状态 ${String(e.status ?? '')}`,
+          `注册表：${String(v.registryPath ?? '')}（注销后 ${String(v.entryCount ?? 0)} 条）`,
+        ]
+        if (v.dryRun !== true) lines.push(`索引：${String(v.indexMdPath ?? '')}`)
+        if (refs.length > 0) {
+          lines.push(`⚠ 悬空引用 ${refs.length} 处：` + refs.map((r: any) => `${String(r.id)}(${String(r.field)})`).join(' · '))
+        } else {
+          lines.push('· 无悬空引用')
+        }
+        const docPath = String(e.doc ?? '')
+        if (docPath !== '') lines.push(`· 文档正文未动：${docPath}（删除它属 plugin_purge）`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    async execute(args) {
+      const workspace = ws()
+      const id = args.id.trim()
+      const dryRun = args.dryRun === true
+      const empty = {
+        ok: false,
+        dryRun,
+        id,
+        removed: false,
+        entryCount: 0,
+        registryPath: absOf(workspace, REGISTRY_REL),
+        indexMdPath: absOf(workspace, INDEX_REL),
+        referencedBy: [] as Array<{ id: string; field: string }>,
+        entry: toJson(null),
+        error: '',
+      }
+      if (id.length === 0) return { ...empty, error: 'id 必填' }
+
+      try {
+        if (dryRun) {
+          // 干跑：纯读 + 纯判据，零写盘
+          const state = loadRegistryState(workspace, fs)
+          const r = removeEntry(state.registry, id, nowIso())
+          return {
+            ...empty,
+            ok: true,
+            removed: r.removed,
+            entryCount: r.registry.entries.length,
+            referencedBy: r.referencedBy.map(x => ({ id: x.id, field: x.field })),
+            entry: toJson(r.entry),
+          }
+        }
+        const outcome = applyRemoval(workspace, fs, id, nowIso())
+        return {
+          ok: true,
+          dryRun: false,
+          id,
+          removed: outcome.removed,
+          entryCount: outcome.entryCount,
+          registryPath: outcome.registryPath,
+          indexMdPath: outcome.indexPath,
+          referencedBy: outcome.referencedBy.map(x => ({ id: x.id, field: x.field })),
           entry: toJson(outcome.entry),
           error: '',
         }

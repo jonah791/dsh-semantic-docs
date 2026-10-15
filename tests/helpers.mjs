@@ -19,10 +19,14 @@ export const REAL_WORKSPACE = process.env['SEMANTIC_DOCS_WORKSPACE'] ?? dirname(
 export const SENTINEL_DOC = join(REAL_WORKSPACE, 'self-plugins', 'dsh-agent-sentinel', 'docs', 'semantic.md')
 export const PANEL_DOC = join(REAL_WORKSPACE, 'self-plugins', 'dsh-panel', 'docs', 'semantic.md')
 
+/** 本进程建过的工作区（清场只清自己的——见 cleanupAll 的注释） */
+const created = new Set()
+
 export function freshWorkspace(name) {
   const dir = join(WORK_ROOT, name)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
+  created.add(dir)
   return dir
 }
 
@@ -32,8 +36,26 @@ export function writeText(abs, text) {
   return abs
 }
 
+/**
+ * 清掉**本进程**建过的工作区。
+ *
+ * ⚠ **不许删整个 `WORK_ROOT`**（2026-10-09 实测 · t-cdb92e72 附带发现）：
+ * `node --test` 对每个测试文件起**独立进程且并发**——某个文件的 `after()` 去删共享根目录时，
+ * 另一个文件正在里面建目录 ⇒ Windows 抛 `ENOTEMPTY, Directory not empty: ….work`
+ * ⇒ **5 跑 1 红**的间歇失败，看起来像被测代码不稳（实际是夹具互相清场）。
+ * 每个进程建的目录互不相交，所以「只清自己建的」既够了又无竞态。
+ */
 export function cleanupAll() {
-  rmSync(WORK_ROOT, { recursive: true, force: true })
+  for (const dir of created) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch (err) {
+      // 清场失败不该变成假红（残留目录会在下次 freshWorkspace 的同名 rm 里被覆盖），
+      // 但也不许静默——写到 stderr，测试输出里看得见。
+      console.error(`[helpers] 清理临时工作区失败：${dir} —— ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  created.clear()
 }
 
 /** 构造 EntryFacts（纯逻辑测试用；IO 事实由 collect.ts 采集） */
@@ -155,3 +177,26 @@ export const DOC_INCOMPLETE = `# 语义文档：残缺样本
 
 - **U1** x
 `
+
+/**
+ * 造一份 **10 节齐全** 的语义文档，只替换「可证伪验收」表的数据行。
+ * 用途：单变量地测验收解析（nearMiss / proven / pendingMarked），不受别节内容干扰。
+ * 2026-10-09 加（t-a49e40a8 · D7 近义词误读）。
+ */
+export function docWithAcceptanceRows(rows) {
+  return [
+    '# 语义文档：测试夹具', '',
+    '> 版本 v0.1 · 2026-01-01 · 状态：已实现',
+    '> 实现落点：`x.ts`', '',
+    '## 1 定位与反定位', 'x',
+    '## 2 术语表', '| 术语 | 含义 |', '|---|---|', '| a | b |',
+    '## 3 概念模型与不变量', 'x',
+    '## 4 契约', 'x',
+    '## 5 边界与信任', 'x',
+    '## 6 可证伪验收', '| # | 判据 | 装置 | 状态 |', '|---|---|---|---|',
+    ...rows,
+    '## 7 与实现的关系', 'x',
+    '## 8 实践修订记录', 'x',
+    '## 9 未决问题', '- U1 x', '',
+  ].join('\n')
+}

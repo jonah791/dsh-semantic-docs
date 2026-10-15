@@ -19,7 +19,7 @@ import type { DocParse } from './markdown.ts'
 export const STATUSES = ['draft', 'implemented', 'verified', 'deprecated'] as const
 export type SemanticStatus = (typeof STATUSES)[number]
 
-export const DRIFT_CODES = ['D1', 'D2', 'D3', 'D4', 'D5', 'D6'] as const
+export const DRIFT_CODES = ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7'] as const
 export type DriftCode = (typeof DRIFT_CODES)[number]
 export type DriftSeverity = 'error' | 'warn'
 
@@ -329,6 +329,7 @@ export const DRIFT_HINTS: Record<DriftCode, string> = {
   D4: '按 README §4 补节（模板 docs/semantics/templates/semantic.md）；不适用的小节也要保留标题并写明原因',
   D5: '把该文档登记进 registry.json（semantic_register），或确认它不是语义文档',
   D6: '补「实践修订记录」小节（I3 载体）：即使没有实践也要保留节标题——D6 检查的是它存在',
+  D7: '把最后一格改写成机器可读的形状：已证的写 `✔ 已实测`（✔ 必须在**最后一列**），未验的写「待线上验收」。「已证 / 已验证 / 已验收」这类近义词落在词表外 ⇒ 机器读作毫无证据（README §4.1）',
 }
 
 function fmtTime(ms: number | null): string {
@@ -426,6 +427,19 @@ export function detectDrift(input: DriftInput): DriftIssue[] {
       if (!facts.doc.hasRevisionLog) {
         push('D6', 'error', '注册表指向的文档不含「实践修订记录」小节（I3 载体缺失）', DRIFT_HINTS.D6)
       }
+      // ---- D7 近义词误读（只报不拦）----
+      // 「已证 / 已验证 / 已验收」这类**人读等于已证**的写法落在 `proven` 的词表外 ⇒ 机器读作「毫无证据」。
+      // 2026-09-15 agent-cluster 18 条「已验证」⇒ 0/18/18；2026-10-09 agent-reconstruction 9 条「已证」⇒ 0/11。
+      // ⚠ 严重度是 warn 且**不改任何状态判定**：它只说「你的写法机器读不到」，处置归主体（README §4.1）。
+      if (facts.doc.acceptance.nearMiss > 0) {
+        const rowLines = facts.doc.acceptance.rows.filter((r) => r.nearMiss).map((r) => r.line)
+        push(
+          'D7',
+          'warn',
+          `近义词误读风险 ${facts.doc.acceptance.nearMiss} 条（行 ${rowLines.slice(0, 6).join('、')}${rowLines.length > 6 ? ' …' : ''}）：最后一格用了词表外的写法——机器读作未验`,
+          DRIFT_HINTS.D7,
+        )
+      }
     }
   })
 
@@ -446,6 +460,57 @@ export function detectDrift(input: DriftInput): DriftIssue[] {
 export function acceptanceFromDoc(doc: DocParse | null): { total: number; proven: number; pending: number } | null {
   if (doc === null) return null
   return { total: doc.acceptance.total, proven: doc.acceptance.proven, pending: doc.acceptance.pending }
+}
+
+/** 注册表快照与文档解析对账的结果（null = 一致或不可比） */
+export interface SnapshotMismatch {
+  code: 'missing-snapshot' | 'mismatch'
+  id: string
+  message: string
+}
+
+function numOr(v: number | null | undefined): string {
+  return typeof v === 'number' ? String(v) : '—'
+}
+
+/**
+ * 注册表验收快照 ↔ 文档解析的对账（纯函数 · 2026-10-09 · t-cdb92e72）。
+ *
+ * 为什么要有它——「机器读不到 ⇒ 报没问题」的**第三次**同型：
+ * 旧判据是 `if (reg === null || parsed === null) continue`，把「无法对账」与「已对齐」
+ * 压成同一个输出；而 `reg === null` 恰恰是写侧缺陷（不带 doc 的注册把快照清成 null）的产物
+ * ⇒ **缺陷把告警关掉了**，输出看起来反而更干净（2026-10-09 实测：10 条不一致「很干净地」消失）。
+ * 第二个形状同根：旧判据只比 `pending` ⇒ `total` 变化的陈旧快照同样静默
+ * （同日实测 9 条：panel-host 15→17、agent-self-rewrite 16→28 …）。
+ *
+ * @param reg   注册表里存的快照（null/undefined = 缺失）
+ * @param parsed 文档解析出的统计；**null = 文档不可用**（缺失/读失败）——那属 D1 的域，此处不重复报
+ */
+export function compareAcceptanceSnapshot(
+  id: string,
+  reg: Acceptance | null | undefined,
+  parsed: { total: number; proven: number; pending: number } | null,
+): SnapshotMismatch | null {
+  if (parsed === null) return null
+  if (reg === null || reg === undefined) {
+    return {
+      code: 'missing-snapshot',
+      id,
+      message:
+        `注册表验收快照**缺失** [${id}]：文档解析得 ${parsed.proven}/${parsed.pending}/${parsed.total}，` +
+        '但注册表 acceptance=null ⇒ **无法对账**（这不是「已对齐」）。' +
+        '用 semantic_register 回填（带 doc 或只给 id——会用条目原有的 doc）。',
+    }
+  }
+  const diffs: string[] = []
+  if ((reg.pending ?? null) !== parsed.pending) {
+    diffs.push(`pending 注册表 ${numOr(reg.pending)} ≠ 文档 ${parsed.pending}`)
+  }
+  if ((reg.total ?? null) !== parsed.total) {
+    diffs.push(`total 注册表 ${numOr(reg.total)} ≠ 文档 ${parsed.total}`)
+  }
+  if (diffs.length === 0) return null
+  return { code: 'mismatch', id, message: `注册表验收快照与文档解析不一致 [${id}]：${diffs.join('；')}（用 semantic_register 回填）` }
 }
 
 // ---------------------------------------------------------------------------
@@ -558,4 +623,50 @@ export function renderIndexMarkdown(registry: Registry, options: { generatedAt: 
   lines.push('', `**状态分布**：${dist}`, '')
   lines.push('> drift 检查：`semantic_check`（D1–D6）；条目增改：`semantic_register`（幂等 upsert）。', '')
   return lines.join('\n')
+}
+
+/** 删除一个注册表条目后的结果（含**悬空引用**清单）。 */
+export interface RemoveResult {
+  registry: Registry
+  removed: boolean
+  /** 被删掉的条目（未删时为 null）。 */
+  entry: RegistryEntry | null
+  /**
+   * 仍**指向被删条目文档路径**的其他条目 —— 删除前必须让人看见，
+   * 否则会留下悬空引用（与 D1「路径不存在」同族，但方向相反）。
+   */
+  referencedBy: Array<{ id: string; field: 'doc' | 'twins' | 'impl' }>
+}
+
+/**
+ * 从注册表移除一个条目（纯函数：只算，不写盘）。
+ *
+ * 语义边界：
+ * - 未命中 ⇒ `removed: false` 且 registry 原样返回（**调用方必须据此报错，不得静默当成功**）；
+ * - **只删注册表条目，不删文档正文**——正文属插件目录，归退役流程（`plugin_purge`）管；
+ * - 删除是**不可逆**的（无回收站）：调用方应先跑 `referencedBy` 检查。
+ */
+export function removeEntry(registry: Registry, id: string, updatedAt: string): RemoveResult {
+  const idx = registry.entries.findIndex((e) => e.id === id)
+  if (idx < 0) return { registry, removed: false, entry: null, referencedBy: [] }
+  const entry = registry.entries[idx] as RegistryEntry
+  const entries = registry.entries.filter((_, i) => i !== idx).map((e) => ({ ...e }))
+  const docPath = normalizeRelPath(String(entry.doc ?? ''))
+  const referencedBy: Array<{ id: string; field: 'doc' | 'twins' | 'impl' }> = []
+  if (docPath !== '') {
+    for (const e of entries) {
+      if (normalizeRelPath(String(e.doc ?? '')) === docPath) {
+        referencedBy.push({ id: String(e.id), field: 'doc' })
+        continue
+      }
+      if (Array.isArray(e.twins) && e.twins.some((t) => normalizeRelPath(String(t)) === docPath)) {
+        referencedBy.push({ id: String(e.id), field: 'twins' })
+        continue
+      }
+      if (Array.isArray(e.impl) && e.impl.some((t) => normalizeRelPath(String(t)) === docPath)) {
+        referencedBy.push({ id: String(e.id), field: 'impl' })
+      }
+    }
+  }
+  return { registry: { ...registry, updatedAt, entries }, removed: true, entry, referencedBy }
 }

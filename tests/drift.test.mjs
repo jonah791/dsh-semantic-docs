@@ -5,7 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseSemanticDoc } from '../lib/markdown.js'
 import { detectDrift } from '../lib/registry.js'
-import { DOC_COMPLETE, DOC_INCOMPLETE, makeEntry, makeFacts } from './helpers.mjs'
+import { DOC_COMPLETE, DOC_INCOMPLETE, makeEntry, makeFacts, docWithAcceptanceRows } from './helpers.mjs'
 
 const docIncomplete = parseSemanticDoc(DOC_INCOMPLETE)
 
@@ -115,4 +115,45 @@ test('deprecated 条目只查 D1（README §5：不再参与 drift 告警）', (
 test('facts 为 null 的条目（schema 不合法）不参与判定，也不崩', () => {
   const issues = detectDrift({ entries: [makeEntry({ id: 'broken' })], facts: [null] })
   assert.deepEqual(issues, [])
+})
+
+// ---------- D7 近义词误读（2026-10-09 · t-a49e40a8）----------
+
+test('D7：格首近义词 ⇒ warn（且**不改任何状态判定**——只报不拦）', () => {
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows([
+      '| A1 | p1 | e1 | 已验收（单测，2026-01-01） |',
+      '| A2 | p2 | e2 | 已证 |',
+    ]),
+  )
+  const issues = detectDrift({
+    entries: [makeEntry({ id: 'nm', status: 'implemented' })],
+    facts: [makeFacts({ doc })],
+  })
+  const d7 = issues.filter((i) => i.code === 'D7')
+  assert.equal(d7.length, 1, '一份文档一条（按条不按行）')
+  assert.equal(d7[0].severity, 'warn', '只报不拦 ⇒ 不能是 error')
+  assert.equal(d7[0].id, 'nm')
+  assert.match(d7[0].message, /近义词误读风险 2 条/)
+  // 行号**取自解析结果本身**，不硬编码：夹具增删一行就会漂——这正是既有测试踩过的「测试太脆」
+  // （2026-09-22 实测：硬编码 proven 值被一次正当回写打崩，而那次改动是对的）。
+  const [r1, r2] = doc.acceptance.rows
+  assert.match(d7[0].message, new RegExp(`行 ${r1.line}、${r2.line}`), '必须点名行号，人才找得到')
+  assert.equal(
+    issues.filter((i) => i.code === 'D2').length,
+    0,
+    'D7 只描述**写法**，不参与声明与证据的比对 ⇒ 不得触发 D2',
+  )
+})
+
+test('D7 对照：全用词表内写法 ⇒ 一条不报', () => {
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows(['| A1 | p1 | e1 | ✔ 已实测 |', '| A2 | p2 | e2 | ⚠ 待线上验收 |']),
+  )
+  assert.equal(doc.acceptance.nearMiss, 0)
+  const issues = detectDrift({
+    entries: [makeEntry({ id: 'ok' })],
+    facts: [makeFacts({ doc })],
+  })
+  assert.equal(issues.filter((i) => i.code === 'D7').length, 0, '恒为真的告警不是证据')
 })

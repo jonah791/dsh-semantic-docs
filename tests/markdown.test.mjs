@@ -6,7 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { parseSemanticDoc } from '../lib/markdown.js'
-import { SENTINEL_DOC, PANEL_DOC, DOC_COMPLETE, DOC_INCOMPLETE } from './helpers.mjs'
+import { SENTINEL_DOC, PANEL_DOC, DOC_COMPLETE, DOC_INCOMPLETE, docWithAcceptanceRows } from './helpers.mjs'
 
 test('真实样本：哨兵 docs/semantic.md（结构断言 + 恒真关系，不硬编码具体数字）', () => {
   const text = readFileSync(SENTINEL_DOC, 'utf8')
@@ -173,4 +173,89 @@ test('有表头的正常表格仍不吃数据行（修正不得反噬正常形�
   ].join('\n'))
   assert.equal(doc.acceptance.total, 2)
   assert.deepEqual(doc.acceptance.rows.map((r) => r.id), ['A1', 'A2'])
+})
+
+// ---------- D7 近义词误读（2026-10-09 · t-a49e40a8）----------
+
+test('D7 尸体样本：格首「已证 / 已验证」⇒ nearMiss 计数到（真语料实测的两种写法）', () => {
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows([
+      '| A1 | p1 | e1 | **已证**（2026-01-01 实测读数） |',
+      '| A2 | p2 | e2 | 已验证 |',
+      '| A3 | p3 | e3 | ✔ 已实测 |',
+      '| A4 | p4 | e4 | ⚠ 待线上验收 |',
+      '| A5 | p5 | e5 | 不可达（当前路径）：execute 先写目录，而 I1 保证该目录此前不存在 ⇒ 已由 try/catch 实现 |',
+    ]),
+  )
+  assert.equal(doc.acceptance.nearMiss, 2, '两条词表外写法应被点名')
+  assert.equal(doc.acceptance.rows[0].nearMiss, true, '「**已证**（…）」应命中（去粗体后格首仍是「已证」）')
+  assert.equal(doc.acceptance.rows[1].nearMiss, true, '「已验证」应命中')
+  // 不污染既有口径：nearMiss 是**第四桶**，不是把行挪进 proven/pending
+  assert.equal(doc.acceptance.proven, 1, 'proven 仍只认 ✔ 那一行')
+  assert.equal(doc.acceptance.pendingMarked, 1, '「待线上验收」仍单独计数')
+  assert.equal(doc.acceptance.total, 5)
+})
+
+test('D7 对照：✔ 已实测 / ⚠ 待线上验收 / **长散文格** ⇒ 一条不报（锚定格首的分辨力）', () => {
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows([
+      '| A1 | p1 | e1 | ✔ 已实测（单测） |',
+      '| A2 | p2 | e2 | ⚠ 待线上验收 |',
+      '| A3 | p3 | e3 | 不可达（当前路径）：execute 先写目录，而 I1 保证该目录此前不存在 ⇒ 已由 try/catch 实现 |',
+    ]),
+  )
+  // ⚠ 第 3 行是**真实语料里抓到的假阳性形状**：最后一格是整段说明，行文里出现「已由…实现」。
+  // 判据锚定**格首**才把它排除（松口径时全库有 4 条这种误报，锚定后为 0）。
+  assert.equal(doc.acceptance.nearMiss, 0, '长散文格不得误报——否则告警变噪音')
+})
+
+test('D7 真语料对照：生产文档 nearMiss 为 0（哨兵 docs/semantic.md）', () => {
+  const doc = parseSemanticDoc(readFileSync(SENTINEL_DOC, 'utf8'))
+  assert.equal(doc.acceptance.nearMiss, 0, '哨兵文档在 2026-10-09 全库扫描中不在名单内 ⇒ 判据不得对好样本发火')
+})
+
+// ---------- 节 span 定位：子标题不得抢走正式节（2026-10-09 · t-cdb92e72 附带）----------
+
+test('尸体：排在前面、标题含「验收」的子标题**不得**抢走正式验收节的 span', () => {
+  // 真事（本仓 2026-10-09 实测）：我在本插件的 `docs/semantic.md` 里加了 `### 4.4 验收快照…`，
+  // 而 `findSpan` 按**文档序**取首个命中 `/可证伪|验收/` 的标题 ⇒ 抢走 `## 7 · 可证伪验收清单` 的 span
+  // ⇒ A1–A17 被读成那张 3 行来源表（`0/3/3`），**且这个错读数被静默写进注册表**。
+  // 判据：命中取**层级最浅者**（同级取文档序最先）。
+  const doc = parseSemanticDoc([
+    '# 语义文档：样本',
+    '',
+    '## 4 · 契约',
+    '',
+    '### 4.4 验收快照：三来源与对账口径',
+    '',
+    '| 来源 | 触发条件 | 结果 |',
+    '|------|---------|------|',
+    '| doc | a | b |',
+    '| explicit | a | b |',
+    '| untouched | a | b |',
+    '',
+    '## 7 · 可证伪验收清单',
+    '',
+    '| # | 命题 | 证据 | 状态 |',
+    '|---|------|------|------|',
+    '| A1 | 一 | 单测 | ✔ 已实测 |',
+    '| A2 | 二 | 单测 | 待线上验收 |',
+  ].join('\n'))
+  assert.equal(doc.acceptance.total, 2, '必须取 `## 7` 那张表，不是子节的 3 行来源表')
+  assert.deepEqual(doc.acceptance.rows.map((r) => r.id), ['A1', 'A2'])
+  assert.equal(doc.acceptance.proven, 1)
+})
+
+test('反向对照：只有子标题命中时仍能解析（层级择优不得退化成「只认 ##」）', () => {
+  const doc = parseSemanticDoc([
+    '# 语义文档：样本',
+    '',
+    '### 验收清单',
+    '',
+    '| # | 命题 | 证据 | 状态 |',
+    '|---|------|------|------|',
+    '| A1 | 一 | 单测 | ✔ 已实测 |',
+  ].join('\n'))
+  assert.equal(doc.acceptance.total, 1)
+  assert.equal(doc.acceptance.proven, 1)
 })

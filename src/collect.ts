@@ -13,16 +13,19 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { execFileSync } from 'node:child_process'
 import { dirname, join, relative, sep } from 'node:path'
 import { parseSemanticDoc } from './markdown.ts'
+import type { DocParse } from './markdown.ts'
 import {
   emptyRegistry,
   evaluateStatus,
   parseRegistry,
   partitionEntries,
+  removeEntry,
   renderIndexMarkdown,
   upsertEntry,
   validateRegistry,
 } from './registry.ts'
 import type {
+  Acceptance,
   EntryFacts,
   EntryPatch,
   Registry,
@@ -414,7 +417,19 @@ export interface RegisterOutcome {
   indexPath: string
   /** 是否用文档解析结果回填了 acceptance/openQuestions（README §6） */
   acceptanceApplied: boolean
+  /** 本轮 acceptance/openQuestions 的**来源**（2026-10-09 · t-cdb92e72） */
+  snapshotSource: SnapshotSource
+  /** 人读说明：回填用了哪份文档 / 为什么没回填——**不许静默**（§5.10） */
+  snapshotNote: string
 }
+
+/**
+ * 快照的来源（决定 `acceptance/openQuestions` 最终是谁写的）：
+ *  - `doc`       从文档解析回填（doc 可为 patch 提供，也可回退条目既有值）
+ *  - `explicit`  调用方显式给定（**只有这条路能清空**——清空必须是显式的，不能是副产物）
+ *  - `untouched` 未动既有字段（doc 不可得：未提供且无既有值 / 文件不存在 / 新建无 doc）
+ */
+export type SnapshotSource = 'doc' | 'explicit' | 'untouched'
 
 /**
  * upsert 注册表 + 重新生成 INDEX.md。
@@ -442,28 +457,53 @@ export function applyRegistration(
     registry = emptyRegistry(workspace, generatedAt)
   }
 
-  let acceptance = patch.acceptance ?? null
-  let openQuestions = patch.openQuestions ?? null
+  // ---- acceptance/openQuestions 的三种来源（2026-10-09 · t-cdb92e72）----
+  // 旧实现 `let acceptance = patch.acceptance ?? null` 把「未提供」折叠成 null，而 `upsertEntry`
+  // 只判 `!== undefined` ⇒ **不带 doc 的注册会把既有快照清成 null**；判据侧对 null 又是 `continue`
+  // ⇒「快照被清空」与「快照真对齐」在输出上完全同形。判官自己把防线关掉了——第三次同型的静默失败。
+  const existing = registry.entries.find((e) => e.id === patch.id) ?? null
+  const explicitSnapshot = patch.acceptance !== undefined || patch.openQuestions !== undefined
+  let acceptance: Acceptance | null | undefined = explicitSnapshot ? (patch.acceptance ?? null) : undefined
+  let openQuestions: number | null | undefined = explicitSnapshot ? (patch.openQuestions ?? null) : undefined
   let acceptanceApplied = false
-  const docRel = typeof patch.doc === 'string' ? patch.doc : undefined
-  if (docRel !== undefined && docRel.trim().length > 0) {
-    const docAbs = absOf(workspace, docRel)
-    if (fs.exists(docAbs)) {
-      let doc
-      try {
-        doc = parseSemanticDoc(fs.readText(docAbs))
-      } catch (err) {
-        throw new Error(`文档读取/解析失败：${docAbs} —— ${errText(err)}`)
+  let snapshotSource: SnapshotSource = explicitSnapshot ? 'explicit' : 'untouched'
+  let snapshotNote = explicitSnapshot ? '调用方显式给定 acceptance/openQuestions（不经文档解析）' : ''
+
+  if (!explicitSnapshot) {
+    // doc 回退**既有值**：只改 status/title 时，用条目**原有的** doc 重解析；
+    // 而不是把「没传 doc」读成「没有文档」（旧实现即如此，快照因此蒸发）。
+    const docRelRaw = patch.doc ?? (typeof existing?.doc === 'string' ? existing.doc : '')
+    const docRel = docRelRaw.trim()
+    if (docRel.length === 0) {
+      snapshotNote = '未提供 doc 且既有条目无 doc ⇒ 不动 acceptance/openQuestions（保留原值）'
+    } else {
+      const docAbs = absOf(workspace, docRel)
+      if (!fs.exists(docAbs)) {
+        // 文件不存在是**合法状态**（条目先登记、文档后写），但**不得**因此清空既有快照：
+        // 解析不可得 ≠ 没有验收。保留原值并把原因如实带出（§5.10：静默失败 = 死亡温床）。
+        snapshotNote =
+          `doc 不存在（${docRel}）⇒ **保留既有 acceptance/openQuestions，不写 null**` +
+          (existing === null ? '（新条目：保持默认 null）' : '')
+      } else {
+        let doc: DocParse
+        try {
+          doc = parseSemanticDoc(fs.readText(docAbs))
+        } catch (err) {
+          // 读/解析异常属 IO 故障：抛错 ⇒ 整个注册不写盘 ⇒ 原快照天然保留（fail-loud，不写半个状态）
+          throw new Error(`文档读取/解析失败：${docAbs} —— ${errText(err)}`)
+        }
+        const note = patch.acceptance?.note
+        acceptance = {
+          total: doc.acceptance.total,
+          proven: doc.acceptance.proven,
+          pending: doc.acceptance.pending,
+          ...(note !== undefined ? { note } : {}),
+        }
+        openQuestions = doc.openQuestions
+        acceptanceApplied = true
+        snapshotSource = 'doc'
+        snapshotNote = `acceptance/openQuestions 已从文档解析回填（${docRel}）`
       }
-      const note = patch.acceptance?.note
-      acceptance = {
-        total: doc.acceptance.total,
-        proven: doc.acceptance.proven,
-        pending: doc.acceptance.pending,
-        ...(note !== undefined ? { note } : {}),
-      }
-      openQuestions = doc.openQuestions
-      acceptanceApplied = true
     }
   }
 
@@ -481,5 +521,68 @@ export function applyRegistration(
     registryPath,
     indexPath,
     acceptanceApplied,
+    snapshotSource,
+    snapshotNote,
+  }
+}
+
+/** 注销一个注册表条目的结果（IO 层版，含写盘后的计数）。 */
+export interface RemoveOutcome {
+  /** false = 该 id 不在注册表里（**调用方必须据此报错，不得静默当成功**）。 */
+  removed: boolean
+  entry: RegistryEntry | null
+  /** 仍指向被删条目文档路径的其他条目（悬空引用预警）。 */
+  referencedBy: Array<{ id: string; field: 'doc' | 'twins' | 'impl' }>
+  entryCount: number
+  registryPath: string
+  indexPath: string
+}
+
+/**
+ * 注销注册表条目 + 重新生成 INDEX.md。
+ *
+ * 纪律（与 applyRegistration 同族）：
+ * - 注册表缺失 ⇒ 抛错（**无处可删不是「已删」**）；
+ * - 注册表坏 JSON ⇒ 抛错并拒绝覆盖（坏注册表是证据）；
+ * - id 未命中 ⇒ `removed: false`，**不写盘**（避免无谓地更新 updatedAt/INDEX）。
+ */
+export function applyRemoval(
+  workspace: string,
+  fs: FsLike,
+  id: string,
+  generatedAt: string,
+): RemoveOutcome {
+  const registryPath = absOf(workspace, REGISTRY_REL)
+  const indexPath = absOf(workspace, INDEX_REL)
+  if (!fs.exists(registryPath)) {
+    throw new Error(`注册表不存在（无处可删）：${registryPath}`)
+  }
+  let text: string
+  try {
+    text = fs.readText(registryPath)
+  } catch (err) {
+    throw new Error(`注册表读取失败（拒绝覆盖）：${registryPath} —— ${errText(err)}`)
+  }
+  const registry = parseRegistry(text, registryPath).registry
+  const r = removeEntry(registry, id, generatedAt)
+  if (!r.removed) {
+    return {
+      removed: false,
+      entry: null,
+      referencedBy: [],
+      entryCount: registry.entries.length,
+      registryPath,
+      indexPath,
+    }
+  }
+  writeAtomic(registryPath, `${JSON.stringify(r.registry, null, 2)}\n`)
+  writeAtomic(indexPath, renderIndexMarkdown(r.registry, { generatedAt }))
+  return {
+    removed: true,
+    entry: r.entry,
+    referencedBy: r.referencedBy,
+    entryCount: r.registry.entries.length,
+    registryPath,
+    indexPath,
   }
 }

@@ -54,6 +54,8 @@ export interface AcceptanceRow {
   pendingMarked: boolean
   /** 证据单元格含通过标记（✔/✓/✅ 或「已实测」等） */
   proven: boolean
+  /** 最后一格**以词表外近义词开头**（人读=已证，机器读=未验）——D7 的依据，只报不拦 */
+  nearMiss: boolean
   /** 1-based 行号 */
   line: number
   raw: string
@@ -73,6 +75,8 @@ export interface AcceptanceStats {
   pendingMarked: number
   /** 既未通过、也未显式标注的行数（口径差异的来源，单独暴露） */
   unprovenUnmarked: number
+  /** 近义词误读风险行数（未证未标 ∩ 格首近义词）——D7 的依据，只报不拦 */
+  nearMiss: number
   rows: AcceptanceRow[]
 }
 
@@ -119,6 +123,16 @@ const HEADING_RE = /^(#{1,6})\s+(.+?)\s*$/
 const FENCE_RE = /^\s*(?:```|~~~)/
 const PASS_RE = /[✔✓✅]|已实测|实测通过|已通过验收/
 const PENDING_RE = /待线上验收|待验收/
+/**
+ * 近义词误读的判据（D7 的依据）：**格首**出现词表外的「已通过」写法。
+ *
+ * 为什么锚定格首：2026-10-09 全库实测（69 份文档 / 1,132 验收行）——不锚定时 4 条**长散文格**被误报
+ * （最后一格是整段说明，只是行文里出现「已由…实现」）。锚定后 **55 行真命中 / 8 份文档**，长散文假阳性 **0**。
+ * 为什么要有它：`proven` 是**严格词表**——「已证 / 已验证 / 已验收」这类**人读等于已证**的写法落在词表外
+ * ⇒ 机器读作「毫无证据」。2026-09-15 `agent-cluster` 18 条「已验证」⇒ 0/18/18；2026-10-09
+ * `agent-reconstruction` 9 条「已证」⇒ 0/11。**同一个坑换了词，两次都靠人碰巧看见 `semantic_get`。**
+ */
+const NEAR_MISS_RE = /^(?:\*\*)?(已证|已验证|已验收|已检验|已核对|已确认|已跑通|实测通过)/
 const LIST_ITEM_RE = /^(\s{0,1})(?:[-*+]|\d+[.)])\s+(.*)$/
 
 function cleanInline(text: string): string {
@@ -162,8 +176,21 @@ interface Span {
   end: number
 }
 
+/**
+ * 定位某一节的 span（标题行 → 下一个**同级或更浅**的标题）。
+ *
+ * **命中取层级最浅者**（同级取文档序最先），不是「文档序第一个命中」。
+ * 理由（2026-10-09 实测）：按文档序取首个时，排在前面的**子标题**会抢走正式节的 span——
+ * `docs/semantic.md` 里新加的 `### 4.4 验收快照…` 抢走了 `## 7 · 可证伪验收清单`，
+ * 于是 A1–A17 被读成子节那 3 行（`0/3/3`），**且这个错读数被静默写进注册表**。
+ * 只按层级择优，`##` 正式节永远赢过 `###` 子标题；全库 72 份文档实测该改动的读数为**零变化**。
+ */
 function findSpan(lines: readonly string[], headings: readonly Heading[], test: RegExp): Span | null {
-  const hit = headings.find((h) => test.test(h.title))
+  let hit: Heading | undefined
+  for (const h of headings) {
+    if (!test.test(h.title)) continue
+    if (hit === undefined || h.level < hit.level) hit = h
+  }
   if (hit === undefined) return null
   const start = hit.line - 1
   let end = lines.length
@@ -232,7 +259,7 @@ function parseTables(lines: readonly string[], mask: readonly boolean[], span: S
 }
 
 function emptyAcceptance(): AcceptanceStats {
-  return { total: 0, proven: 0, pending: 0, pendingMarked: 0, unprovenUnmarked: 0, rows: [] }
+  return { total: 0, proven: 0, pending: 0, pendingMarked: 0, unprovenUnmarked: 0, nearMiss: 0, rows: [] }
 }
 
 /**
@@ -272,12 +299,16 @@ export function parseSemanticDoc(text: string): DocParse {
         if (meaningful.length < 2) return
         const evidence = meaningful.length >= 3 ? (meaningful[meaningful.length - 1] ?? '') : ''
         const raw = `${lines[(table.lineNumbers[idx] ?? 1) - 1] ?? ''}`
+        const pendingMarked = PENDING_RE.test(evidence) || PENDING_RE.test(raw)
+        const proven = PASS_RE.test(evidence)
         rows.push({
           id: meaningful[0] ?? '',
           proposition: meaningful[1] ?? '',
           evidence,
-          pendingMarked: PENDING_RE.test(evidence) || PENDING_RE.test(raw),
-          proven: PASS_RE.test(evidence),
+          pendingMarked,
+          proven,
+          // 只报不拦：格首出现词表外近义词 ⇒ 人读「已证」而机器读「未验」（D7 的依据）
+          nearMiss: !proven && !pendingMarked && NEAR_MISS_RE.test(evidence),
           line: table.lineNumbers[idx] ?? 0,
           raw: raw.trim(),
         })
@@ -292,6 +323,7 @@ export function parseSemanticDoc(text: string): DocParse {
       pending,
       pendingMarked,
       unprovenUnmarked: pending - pendingMarked,
+      nearMiss: rows.filter((r) => r.nearMiss).length,
       rows,
     }
   }
