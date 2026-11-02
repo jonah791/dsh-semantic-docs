@@ -7,3 +7,8 @@ tests/.work/
 
 *.bak
 *.bak-*
+
+# pnpm-lock.yaml：在 profile 里跑安装时顺带生成的**副产品**，不是本仓的锁文件
+# （本仓若跟踪锁文件，那是 npm 的 package-lock.json）。留着它等于让两个包管理器争「谁是权威」，
+# 而实际构建从不读它。2026-11-03 判：不进版本库，文件留本地。
+pnpm-lock.yaml
