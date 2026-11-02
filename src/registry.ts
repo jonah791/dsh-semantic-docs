@@ -389,7 +389,12 @@ export function detectDrift(input: DriftInput): DriftIssue[] {
       ? facts.implLatestCommitMs! > facts.docCommitMs!
       : facts.implLatestMtimeMs !== null && facts.docMtimeMs !== null && facts.implLatestMtimeMs > facts.docMtimeMs
     if (docUsable && fires) {
-      const suppressed = facts.doc !== null && facts.doc.needReview
+      // 抑制带期限（2026-10-21 · t-7216205f）：`待复核至 YYYY-MM-DD` 过期后**自动恢复报警**
+      // ——否则一个标记永久闭嘴，漂移越大越不会被报（抑制判据与最该被问到的对象反相关）。
+      // 无日期的旧标记仍抑制（向后兼容）；其「无期限」状态由 semantic_check 的 notes 明示。
+      const nrUntil = facts.doc?.needReviewUntil ?? null
+      const nrExpired = nrUntil !== null && nowMs > Date.parse(`${nrUntil}T23:59:59`)
+      const suppressed = facts.doc !== null && facts.doc.needReview && !nrExpired
       if (!suppressed) {
         const newerMs = committedBasis ? facts.implLatestCommitMs! : (facts.implLatestMtimeMs as number)
         const olderMs = committedBasis ? facts.docCommitMs! : (facts.docMtimeMs as number)

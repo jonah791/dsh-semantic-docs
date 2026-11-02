@@ -6,44 +6,36 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { parseSemanticDoc } from '../lib/markdown.js'
-import { SENTINEL_DOC, PANEL_DOC, DOC_COMPLETE, DOC_INCOMPLETE, docWithAcceptanceRows } from './helpers.mjs'
+import { realCorpus, REAL_WORKSPACE, PANEL_DOC, DOC_COMPLETE, DOC_INCOMPLETE, docWithAcceptanceRows } from './helpers.mjs'
 
-test('真实样本：哨兵 docs/semantic.md（结构断言 + 恒真关系，不硬编码具体数字）', () => {
-  const text = readFileSync(SENTINEL_DOC, 'utf8')
-  const doc = parseSemanticDoc(text)
+test('真语料全库对照：每份生产文档都能解析，且计数口径自洽', () => {
+  const docs = realCorpus()
+  // ⚠ 零样本会让下面的「全部通过」恒真 —— 必须先钉住语料本体存在。
+  assert.ok(docs.length >= 30, `真语料只有 ${docs.length} 份，太少（< 30）⇒ 对照退化成单文件测`)
 
-  assert.equal(doc.acceptance.total, 9, '验收表行数应为 9（A1–A9）')
-  // ⚠ 这里**刻意不硬编码** proven/pending 的具体值：本测试读的是一份**生产文档**，
-  // 任何人按 D3 回写它都会让数字变（2026-09-22 实测：把 A8/A9 从「待线上验收」改为「已实测」
-  // 就让 `proven should be 6` 崩了——而那次改动本身是正确的，是**测试太脆**，不是文档错）。
-  // 改为断言**恒真关系 + 方向性下界**：既有分辨力，又不会被一次正当回写打崩。
-  assert.equal(
-    doc.acceptance.proven + doc.acceptance.pending,
-    doc.acceptance.total,
-    'proven + pending 必须等于 total（计数口径的自洽性）',
-  )
-  assert.ok(doc.acceptance.proven >= 6, `proven 不应低于历史已知值 6（实测 ${doc.acceptance.proven}）——只应随复核上升`)
-  assert.ok(doc.acceptance.pending <= 3, `pending 不应高于历史已知值 3（实测 ${doc.acceptance.pending}）`)
-  assert.equal(
-    doc.acceptance.pendingMarked + doc.acceptance.unprovenUnmarked,
-    doc.acceptance.pending,
-    'pendingMarked + unprovenUnmarked 必须等于 pending（字面口径与 pending 口径的分类要完备）',
-  )
-  assert.equal(doc.acceptance.rows[6].id, 'A7')
-  assert.equal(doc.acceptance.rows[6].proven, false, 'A7 至今未做压测 ⇒ 应仍判未通过')
-  assert.equal(doc.acceptance.rows[6].pendingMarked, false, 'A7 未显式标注「待线上验收」⇒ 应落在 unprovenUnmarked')
-
-  assert.equal(doc.openQuestions, 5, '未决问题 U1–U5 应为 5 条')
-  assert.equal(doc.openQuestionItems[0].label, 'U1')
-
-  assert.deepEqual(doc.missingSections, [], '哨兵文档 10 节齐全')
-  assert.equal(doc.hasMeta, true)
-  assert.equal(doc.hasRevisionLog, true)
-  assert.equal(doc.needReview, false)
-  assert.equal(doc.meta.version, 'v0.1')
+  /** @type {string[]} */
+  const broken = []
+  for (const file of docs) {
+    const label = file.slice(REAL_WORKSPACE.length + 1).replace(/\\/g, '/')
+    let doc
+    try {
+      doc = parseSemanticDoc(readFileSync(file, 'utf8'))
+    } catch (err) {
+      broken.push(`${label}: 解析抛错 ${err instanceof Error ? err.message : String(err)}`)
+      continue
+    }
+    const a = doc.acceptance
+    // 恒真关系（对任何文档都成立，不依赖具体数字）：
+    if (a.proven + a.pending !== a.total) broken.push(`${label}: proven+pending≠total（${a.proven}+${a.pending}≠${a.total}）`)
+    if (a.pendingMarked + a.unprovenUnmarked !== a.pending) broken.push(`${label}: 未证分类不完备（${a.pendingMarked}+${a.unprovenUnmarked}≠${a.pending}）`)
+    if (doc.missingSections.length + doc.presentSections.length !== 10) broken.push(`${label}: 必备结构没判全（${doc.missingSections.length + doc.presentSections.length}/10）`)
+    for (const row of a.rows) if (row.id.length === 0) broken.push(`${label}: 有验收行缺编号`)
+    for (const q of doc.openQuestionItems) if (q.text.length === 0) broken.push(`${label}: 有未决问题缺正文`)
+  }
+  assert.deepEqual(broken, [], '真语料里出现口径不自洽的文档')
 })
 
-test('真实样本：面板 docs/semantic.md（只断言结构性不变量，不锁内容）', () => {
+test('真样本：面板 docs/semantic.md（只断言结构性不变量，不锁内容）', () => {
   // 说明：面板文档正在被并行实例持续编辑（实测：§11.5「实践修订记录」在本次作业期间被补入），
   // 因此这里只断言**契约级不变量**，不锁具体计数——内容级断言放在固定夹具（DOC_COMPLETE / DOC_INCOMPLETE）里。
   const text = readFileSync(PANEL_DOC, 'utf8')
@@ -209,9 +201,26 @@ test('D7 对照：✔ 已实测 / ⚠ 待线上验收 / **长散文格** ⇒ 一
   assert.equal(doc.acceptance.nearMiss, 0, '长散文格不得误报——否则告警变噪音')
 })
 
-test('D7 真语料对照：生产文档 nearMiss 为 0（哨兵 docs/semantic.md）', () => {
-  const doc = parseSemanticDoc(readFileSync(SENTINEL_DOC, 'utf8'))
-  assert.equal(doc.acceptance.nearMiss, 0, '哨兵文档在 2026-10-09 全库扫描中不在名单内 ⇒ 判据不得对好样本发火')
+test('D7 真语料对照：全库 nearMiss 只允许已知那一份（缺口钉在这里，不是说它没问题）', () => {
+  // nearMiss = 「人读等于已证、但不在严格词表里」的写法。
+  //
+  // ⚠ 这条断言**不是**「全库为 0」——实测只有 1 份文档不在 0 上，而它是**真缺口**：
+  // `dsh-llm-probe/docs/semantic.md` 用的是四列表 `| # | 命题 | 证据 | 状态 |`，
+  // 而解析器取「最后一个非空格」当证据 ⇒ 抓到的是**状态格**里的 `已验证`（不在 PASS_RE 里），
+  // 于是 8 条真·已验的条目被读成「未验」。人读已证、机器读未验，这正是 D7 要抓的形状。
+  //
+  // 修法是解析器支持四列表（状态格 + 证据格分开取），但那要动全库 67 份文档的共用解析层，
+  // 不塞进本次提交。所以这里把缺口**钉成精确清单**：
+  //   · 新文档出现 nearMiss ⇒ 红（判据对好样本发火，或真有人用了词表外写法）
+  //   · 缺口被修好 ⇒ 也红（提醒把这份清单清空，别让豁免变成永久免检）
+  const KNOWN_GAP = ['self-plugins/dsh-llm-probe/docs/semantic.md: 8 条']
+  const docs = realCorpus()
+  assert.ok(docs.length >= 30, `真语料只有 ${docs.length} 份 ⇒ 这条对照无意义`)
+  const hits = docs
+    .map((file) => ({ file, doc: parseSemanticDoc(readFileSync(file, 'utf8')) }))
+    .filter((x) => x.doc.acceptance.nearMiss !== 0)
+    .map((x) => `${x.file.slice(REAL_WORKSPACE.length + 1).replace(/\\/g, '/')}: ${x.doc.acceptance.nearMiss} 条`)
+  assert.deepEqual(hits, KNOWN_GAP, 'nearMiss 清单变了：要么是新缺口（查文档写法），要么是缺口已修（清空 KNOWN_GAP）')
 })
 
 // ---------- 节 span 定位：子标题不得抢走正式节（2026-10-09 · t-cdb92e72 附带）----------

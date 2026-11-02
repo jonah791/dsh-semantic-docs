@@ -1,5 +1,5 @@
 /** 测试共用工具（非 .test.mjs，不参与 node --test 的目录发现） */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -16,8 +16,25 @@ export const WORK_ROOT = join(here, '.work')
  * 非标准布局用 `SEMANTIC_DOCS_WORKSPACE` 覆盖。
  */
 export const REAL_WORKSPACE = process.env['SEMANTIC_DOCS_WORKSPACE'] ?? dirname(dirname(PLUGIN_DIR))
-export const SENTINEL_DOC = join(REAL_WORKSPACE, 'self-plugins', 'dsh-agent-sentinel', 'docs', 'semantic.md')
 export const PANEL_DOC = join(REAL_WORKSPACE, 'self-plugins', 'dsh-panel', 'docs', 'semantic.md')
+
+/**
+ * 真语料：工作区里**实际存在**的所有插件语义文档。
+ *
+ * 存在理由（2026-11-03）：原来只钉一份 `dsh-agent-sentinel/docs/semantic.md` 当「真样本」，
+ * 而那个插件早已不存在 ⇒ 两条测试常年以 `ENOENT` 失败，**读起来像解析器坏了**。
+ * 更糟的是：即使它当年存在，单文件也不配叫「真语料对照」——一个被重命名/退役的插件
+ * 就能让整个对照失效。改成扫全库：判据跟着**语料**走，不跟着某个名字走。
+ * ⚠ 返回空数组时调用方必须响亮报错（否则「全库 nearMiss 为 0」会在零样本上恒真）。
+ */
+export function realCorpus() {
+  const dir = join(REAL_WORKSPACE, 'self-plugins')
+  if (!existsSync(dir)) return []
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => join(dir, e.name, 'docs', 'semantic.md'))
+    .filter((p) => existsSync(p))
+}
 
 /** 本进程建过的工作区（清场只清自己的——见 cleanupAll 的注释） */
 const created = new Set()

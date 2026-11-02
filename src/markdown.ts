@@ -113,6 +113,8 @@ export interface DocParse {
   hasRevisionLog: boolean
   /** 文档含「待复核」标记（抑制 D3） */
   needReview: boolean
+  /** 「待复核至 YYYY-MM-DD」的期限（null = 旧标记，无期限）；过期后 D3 恢复报警（2026-10-21 · t-7216205f） */
+  needReviewUntil: string | null
   acceptance: AcceptanceStats
   openQuestions: number
   openQuestionItems: OpenQuestionItem[]
@@ -367,6 +369,10 @@ export function parseSemanticDoc(text: string): DocParse {
     return { version, date, status, implHints }
   })()
 
+  // 抑制期限（2026-10-21 · t-7216205f）：`待复核至 2026-11-01` ⇒ 过期后 D3 **自动恢复报警**；
+  // 旧写法 `待复核：…`（无日期）⇒ null，仍抑制（向后兼容），其「无期限」状态由 semantic_check 的 notes 明示。
+  const needReviewUntil = /待复核\s*(?:至|截止)\s*[：:]?\s*(\d{4}-\d{2}-\d{2})/.exec(text)?.[1] ?? null
+
   return {
     headings,
     sections: finalSections,
@@ -376,6 +382,7 @@ export function parseSemanticDoc(text: string): DocParse {
     hasMeta,
     hasRevisionLog: finalSections.some((s) => s.key === 'revision-log' && s.present),
     needReview: /待复核/.test(text),
+    needReviewUntil,
     acceptance,
     openQuestions: items.length,
     openQuestionItems: items.slice(0, 50),

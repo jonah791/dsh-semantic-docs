@@ -104,6 +104,38 @@ test('D3：实现 mtime 晚于文档 mtime → warn；文档标「待复核」�
   assert.deepEqual(suppressed.filter((i) => i.code === 'D3'), [])
 })
 
+test('D3 抑制带期限（t-7216205f）：待复核至 YYYY-MM-DD —— 期内抑制 / 过期恢复报警 / 无日期仍抑制', () => {
+  const docUntil = parseSemanticDoc(`${DOC_COMPLETE}\n\n<!-- 待复核至 2026-11-01：实现改动尚未回写 -->\n`)
+  assert.equal(docUntil.needReview, true)
+  assert.equal(docUntil.needReviewUntil, '2026-11-01')
+
+  const d3At = (nowMs) =>
+    detectDrift({
+      entries: [makeEntry({ id: 'stale' })],
+      facts: [makeFacts({ doc: docUntil, docMtimeMs: 1_000, implLatestMtimeMs: 500_000 })],
+      nowMs,
+    }).filter((i) => i.code === 'D3')
+
+  // 期限内 ⇒ 抑制（什么都不报）
+  assert.deepEqual(d3At(Date.parse('2026-10-21T12:00:00')), [])
+  // 过期 ⇒ 恢复报警，严重度与原因与未抑制时一致
+  const after = d3At(Date.parse('2026-12-01T12:00:00'))
+  assert.equal(after.length, 1)
+  assert.equal(after[0].severity, 'warn')
+  assert.match(after[0].message, /实现比文档新/)
+
+  // 无日期的旧标记 ⇒ needReviewUntil=null，行为与旧版一致（仍抑制），向后兼容
+  const docNoDate = parseSemanticDoc(`${DOC_COMPLETE}\n\n<!-- 待复核：实现改动尚未回写 -->\n`)
+  assert.equal(docNoDate.needReview, true)
+  assert.equal(docNoDate.needReviewUntil, null)
+  const legacy = detectDrift({
+    entries: [makeEntry({ id: 'stale' })],
+    facts: [makeFacts({ doc: docNoDate, docMtimeMs: 1_000, implLatestMtimeMs: 500_000 })],
+    nowMs: Date.parse('2026-12-01T12:00:00'),
+  }).filter((i) => i.code === 'D3')
+  assert.deepEqual(legacy, [])
+})
+
 test('deprecated 条目只查 D1（README §5：不再参与 drift 告警）', () => {
   const issues = detectDrift({
     entries: [makeEntry({ id: 'old', status: 'deprecated' })],

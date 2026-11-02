@@ -136,7 +136,7 @@ export function createNodeGit(workspace: string, maxCommits = 3000): GitLike {
 
   const git = (cwd: string, args: string[]): string | null => {
     try {
-      return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
+      return execFileSync('git', ['-C', cwd, ...args], { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
     } catch {
       return null
     }

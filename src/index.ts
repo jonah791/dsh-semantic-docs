@@ -377,6 +377,7 @@ export function apply(ctx: Context, config: Config): void {
           notes: { type: 'json' },
           actions: { type: 'json' },
           summary: { type: 'string' },
+          actionable: { type: 'number' },
           error: { type: 'string' },
         },
       },
@@ -388,7 +389,15 @@ export function apply(ctx: Context, config: Config): void {
         const head = `语义文档 drift 检查（${String(v.scope ?? '全部')} · 检查 ${String(v.checked ?? 0)} 条）· ${String(v.registryPath ?? '')}\n${String(v.summary ?? '')}`
         if (issues.length === 0) {
           const tail = notes.length > 0 ? `\n\n注：\n- ${notes.join('\n- ')}` : ''
-          return [{ type: 'text', text: `${head}\n未发现 drift（D1–D7 全过）。${tail}` }]
+          // ★ 假绿守住（2026-10-21 · t-7216205f）：notes 里的待处置项**不进 error/warn 计数**，
+          //   而旧文案无条件说「未发现 drift」⇒ 抑制披露 + 快照不一致 + 未注册文档被一句话盖掉。
+          //   判据：把「零 drift」与「零待处置」分成两件事说，别让前者冒充后者。
+          const pendingCount = typeof v.actionable === 'number' ? v.actionable : 0
+          const verdict =
+            pendingCount > 0
+              ? `D1–D7 全过，但**另有 ${String(pendingCount)} 条不进计数的待处置事项**（见下方注：抑制披露 / 快照不一致 / 未注册文档 / 跳过条目）。⚠「D×0」只覆盖 D1–D7，**不等于健康**。`
+              : '未发现 drift（D1–D7 全过）。'
+          return [{ type: 'text', text: `${head}\n${verdict}${tail}` }]
         }
         const lines = issues.map(
           (i) => `${i.severity === 'error' ? '✖' : '⚠'} ${i.code}${i.id === undefined ? '' : ` [${i.id}]`} ${i.message}`,
@@ -425,8 +434,31 @@ export function apply(ctx: Context, config: Config): void {
         }
         const deprecated = state.records.filter((r) => r.entry.status === 'deprecated').map((r) => r.entry.id)
         if (deprecated.length > 0) notes.push(`deprecated 条目不参与 D2/D3/D4/D6 告警（README §5）：${deprecated.join('、')}`)
-        const suppressed = state.records.filter((r) => r.facts?.doc?.needReview === true).map((r) => r.entry.id)
-        if (suppressed.length > 0) notes.push(`D3 被文档「待复核」标记抑制：${suppressed.join('、')}`)
+        // 抑制披露分三档（2026-10-21 · t-7216205f）：有效期内 / **无期限**（旧标记，必须明说，否则等于无声豁免）/
+        // **已过期**（D3 已恢复报警——这里不说，那条突然冒出的 D3 就成了不可解释的新问题）。
+        const nrRecords = state.records.filter((r) => r.facts?.doc?.needReview === true)
+        const nrNow = Date.now()
+        const nrActive: string[] = []
+        const nrNoDeadline: string[] = []
+        const nrExpiredIds: string[] = []
+        for (const r of nrRecords) {
+          const until = r.facts?.doc?.needReviewUntil ?? null
+          if (until === null) {
+            nrActive.push(r.entry.id)
+            nrNoDeadline.push(r.entry.id)
+          } else if (nrNow > Date.parse(`${until}T23:59:59`)) {
+            nrExpiredIds.push(`${r.entry.id}（至 ${until}）`)
+          } else {
+            nrActive.push(`${r.entry.id}（至 ${until}）`)
+          }
+        }
+        if (nrActive.length > 0) notes.push(`D3 被文档「待复核」标记抑制：${nrActive.join('、')}`)
+        if (nrNoDeadline.length > 0) {
+          notes.push(`⚠ D3 抑制**无期限**（旧标记，建议改写为「待复核至 YYYY-MM-DD」）：${nrNoDeadline.join('、')}`)
+        }
+        if (nrExpiredIds.length > 0) notes.push(`⚠ D3 抑制**已过期、报警已恢复**：${nrExpiredIds.join('、')}`)
+        // 保持原变量名（actionable 计数依赖它）：**无论是否过期都算待处置**——「文档声明了自己待复核」本身就是待办状态。
+        const suppressed = nrRecords.map((r) => r.entry.id)
         // 成因 B 的「明确标注」半（2026-09-22 · t-c54b41c6）：未提交改动**不计入 D3**（未经提交核对），
         // 但也不能就此消失——否则「工作区改了却没提交」这件事在外部完全不可见（§5.10 静默失败）。
         // 成因 A 的「披露」半（2026-09-22 · t-c54b41c6）：共享装配点被抑制的条目必须点名，
@@ -460,6 +492,16 @@ export function apply(ctx: Context, config: Config): void {
           `D5 扫描根：${SCAN_ROOTS.map((r) => `${workspace.replace(/\\/g, '/')}/${r}`).join(' | ')}（排除 docs/semantics/**）`,
         )
 
+        // ★ 待处置计数（2026-10-21 · t-7216205f）：上面这些事项**不进 error/warn 计数**，但都是真欠账。
+        //   计数直接取自各来源的既有变量（不另造真源，也不靠正则去数 notes 文案——那会在文案改动时静默失效）。
+        const actionable =
+          (onlyId !== undefined && !state.records.some((r) => r.entry.id === onlyId) ? 1 : 0) +
+          state.skipped.length +
+          suppressed.length +
+          sharedSuppressed.length +
+          snapshotHits.length +
+          state.unregisteredDocs.length
+
         const actions: string[] = []
         // 码表**从 DRIFT_CODES 派生**，不手写枚举：手写列表在判据扩张时静默失效
         // ——2026-10-09 实测，D7 上线后既没进 actions 也没进 summary ⇒ 我写的修复指引（DRIFT_HINTS.D7）
@@ -484,6 +526,7 @@ export function apply(ctx: Context, config: Config): void {
           notes: toJson(notes),
           actions: toJson(actions),
           summary,
+          actionable,
           error: '',
         }
       } catch (err) {
