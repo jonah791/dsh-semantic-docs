@@ -50,9 +50,11 @@ export interface AcceptanceRow {
   id: string
   proposition: string
   evidence: string
+  /** 「状态」格原文（表格没有状态列 ⇒ 空串）。与 evidence 分开：它是结论，证据是依据。 */
+  status: string
   /** 显式标注「待线上验收」（I5 的字面标记） */
   pendingMarked: boolean
-  /** 证据单元格含通过标记（✔/✓/✅ 或「已实测」等） */
+  /** 证据单元格含通过标记（✔/✓/✅ 或「已实测」等），或状态格判定为已验 */
   proven: boolean
   /** 最后一格**以词表外近义词开头**（人读=已证，机器读=未验）——D7 的依据，只报不拦 */
   nearMiss: boolean
@@ -137,6 +139,42 @@ const PENDING_RE = /待线上验收|待验收/
 const NEAR_MISS_RE = /^(?:\*\*)?(已证|已验证|已验收|已检验|已核对|已确认|已跑通|实测通过)/
 const LIST_ITEM_RE = /^(\s{0,1})(?:[-*+]|\d+[.)])\s+(.*)$/
 
+/**
+ * 表头所列「这一列是什么」——2026-11-03 补的四列表支持。
+ *
+ * 存在理由：早先的证据格一律取「最后一个非空格」。三列表（`# | 命题 | 证据`）那样取是对的，
+ * 四列表（`# | 命题 | 证据 | 状态`）就**取到了状态格**：`dsh-llm-probe` 8 条写着 `已验证`，
+ * 于是被当成「证据是『已验证』」——它不在 `PASS_RE` 词表里 ⇒ 8 条真·已验被读成未验，
+ * 而且**静默**：读数只是一个偏小的数字，没有任何东西提示我「取错列了」。
+ *
+ * 判据因此要从「位置」改成「角色」：读表头，按列名认列。
+ */
+const COL_PROPOSITION_RE = /命题|判据|主张|proposition/i
+/** `装置` / `手段` 是本项目语料里的「证据」同义词（夹具与本仓文档都用过），不认就会退回旧口径。 */
+const COL_EVIDENCE_RE = /证据|依据|佐证|装置|手段|evidence/i
+const COL_STATUS_RE = /状态|结果|结论|验收状态|verdict|status/i
+/**
+ * 状态格里表示「已验」的词，**在 `PASS_RE` 词表之外**还要认的（`PASS_RE` 那批照认）。
+ * 为什么是「之外」而不是「另起一套」：三列表 `| 命题 | 证据 | 状态 |` 的状态格本来就常写
+ * `已实测`（那是 `PASS_RE` 的词）；只认新词表会把 20 多份文档的已验读数一次打到 0。
+ * 2026-11-03 第一版就是这么错的——改口径时必须先量全库，别只盯要修的那一份。
+ */
+const STATUS_PASS_EXTRA_RE = /已验证|已验|已证|已验收|已通过|通过|pass|done/i
+
+/**
+ * 状态格是否表示「已验」。空串 = 没有状态列 / 该格为空 ⇒ 不由它下判断（返回 false，交回证据格）。
+ *
+ * ⚠ **刻意没有「未通过」一票否决**（2026-11-03 决定）。四列表的状态格常把两件事写在一格里：
+ * `已实测（单测）；⚠ 线上验收未通过——…`。加否决会让 17 份文档共 **29 行**的既有读数一起翻，
+ * 而「单测已过但线上未过」算不算已验，是**语义决定**，该由文档作者单独裁决，
+ * 不该藏在一次「修解析」里。⇒ 本次只做原任务要的那一件事：让**只在状态格写「已验证」**的行
+ * 不再被读成未验。那个 fail-open 缺口已单独登记（`lh-` 台账），带实测数字。
+ */
+function statusProven(status: string): boolean {
+  if (status === '') return false
+  return PASS_RE.test(status) || STATUS_PASS_EXTRA_RE.test(status)
+}
+
 function cleanInline(text: string): string {
   return text
     .replace(/\*\*/g, '')
@@ -209,17 +247,45 @@ function findSpan(lines: readonly string[], headings: readonly Heading[], test: 
 
 interface TableBlock {
   header: string[]
+  /** 首行是否**真是表头**（第二行是分隔行）。false ⇒ `header` 其实是首条数据行，不许当列名读。 */
+  hasHeader: boolean
   rows: string[][]
   lineNumbers: number[]
 }
 
 const SEP_RE = /^[\s:|-]*-[\s:|-]*$/
 
+/**
+ * 拆一行表格为单元格。
+ *
+ * ⚠ `\|` 是 Markdown 表格里的**转义竖线**（单元格内容自身含 `|`，如命令行/正则片段），
+ * 它不是列分隔符。早先直接 `split('|')` 会把它切成两格 ⇒ **列数虚增、后续所有列错位**。
+ * 2026-11-03 实测：`dsh-llm-retry` / `dsh-code-search` / `dsh-clyan` 的验收行因此变成 5–6 格，
+ * 「证据」与「状态」各自被切成碎片。这个 bug 一直在，只是旧口径「取最后一格」把它掩盖了；
+ * 一旦按列名取格，它就变成硬伤。
+ */
 function splitRow(line: string): string[] {
   let s = line.trim()
   if (s.startsWith('|')) s = s.slice(1)
-  if (s.endsWith('|')) s = s.slice(0, -1)
-  return s.split('|').map((c) => cleanInline(c))
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1)
+  const cells: string[] = []
+  let buf = ''
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i] ?? ''
+    if (c === '\\' && s[i + 1] === '|') {
+      buf += '\\|'
+      i += 1
+      continue
+    }
+    if (c === '|') {
+      cells.push(buf)
+      buf = ''
+      continue
+    }
+    buf += c
+  }
+  cells.push(buf)
+  return cells.map((c) => cleanInline(c.replace(/\\\|/g, '|')))
 }
 
 function parseTables(lines: readonly string[], mask: readonly boolean[], span: Span): TableBlock[] {
@@ -253,6 +319,7 @@ function parseTables(lines: readonly string[], mask: readonly boolean[], span: S
     const body = hasSeparator ? block.slice(2) : block
     tables.push({
       header: first.cells,
+      hasHeader: hasSeparator,
       rows: body.map((b) => b.cells),
       lineNumbers: body.map((b) => b.line),
     })
@@ -296,20 +363,39 @@ export function parseSemanticDoc(text: string): DocParse {
   if (acceptanceSpan !== null) {
     const rows: AcceptanceRow[] = []
     for (const table of parseTables(lines, mask, acceptanceSpan)) {
+      // 列角色只在**真有表头**时才可用：表格被空行切成多块时，后续块的首行是数据行，
+      // 拿它当列名会把「命题」里的字读成列名（2026-09-22 修正过的同一个坑）。
+      const colProposition = table.hasHeader ? table.header.findIndex((h) => COL_PROPOSITION_RE.test(h)) : -1
+      const colEvidence = table.hasHeader ? table.header.findIndex((h) => COL_EVIDENCE_RE.test(h)) : -1
+      const colStatus = table.hasHeader ? table.header.findIndex((h) => COL_STATUS_RE.test(h)) : -1
       table.rows.forEach((cells, idx) => {
         const meaningful = cells.filter((c) => c.length > 0)
         if (meaningful.length < 2) return
-        const evidence = meaningful.length >= 3 ? (meaningful[meaningful.length - 1] ?? '') : ''
+        /** 按**列下标**取格（越界给空串）——不许先把空格滤掉再取位置，那会让列错位。 */
+        const at = (i: number): string => (i >= 0 && i < cells.length ? (cells[i] ?? '') : '')
+        const proposition = colProposition >= 0 ? at(colProposition) : (meaningful[1] ?? '')
+        const status = at(colStatus)
+        /** 旧口径的「最后一格」——**必须留着**：见下面 proven 的注释。 */
+        const legacyEvidence = meaningful.length >= 3 ? (meaningful[meaningful.length - 1] ?? '') : ''
+        // 证据格：表头点名了这一列就用它（这样 `证据` 与 `状态` 不再被混成一格）；
+        // 表头没点名才退回旧口径。
+        const evidence = colEvidence >= 0 ? at(colEvidence) : legacyEvidence
         const raw = `${lines[(table.lineNumbers[idx] ?? 1) - 1] ?? ''}`
-        const pendingMarked = PENDING_RE.test(evidence) || PENDING_RE.test(raw)
-        const proven = PASS_RE.test(evidence)
+        const pendingMarked = PENDING_RE.test(evidence) || PENDING_RE.test(status) || PENDING_RE.test(raw)
+        // 已验判定 = 旧口径的**超集**（只增不减）：
+        //   `PASS_RE(legacyEvidence)` 保住旧行为（多份文档把通过标记写在第 3/4 格，取哪格不该由我改）；
+        //   `statusProven(status)` 是本次要修的那一格（只在状态列写「已验证」的行）。
+        // 为什么不做减法见 `statusProven` 的注释：那会让 29 行既有读数一起翻，属语义决定不是解析修复。
+        const proven = PASS_RE.test(evidence) || statusProven(status) || PASS_RE.test(legacyEvidence)
         rows.push({
           id: meaningful[0] ?? '',
-          proposition: meaningful[1] ?? '',
+          proposition,
           evidence,
+          status,
           pendingMarked,
           proven,
-          // 只报不拦：格首出现词表外近义词 ⇒ 人读「已证」而机器读「未验」（D7 的依据）
+          // 只报不拦：格首出现词表外近义词 ⇒ 人读「已证」而机器读「未验」（D7 的依据）。
+          // 注意这条只对**证据格**成立——状态列里的「已验证」是结论，不是误读。
           nearMiss: !proven && !pendingMarked && NEAR_MISS_RE.test(evidence),
           line: table.lineNumbers[idx] ?? 0,
           raw: raw.trim(),

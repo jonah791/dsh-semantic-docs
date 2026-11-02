@@ -152,11 +152,13 @@ test('facts 为 null 的条目（schema 不合法）不参与判定，也不崩'
 // ---------- D7 近义词误读（2026-10-09 · t-a49e40a8）----------
 
 test('D7：格首近义词 ⇒ warn（且**不改任何状态判定**——只报不拦）', () => {
+  // 2026-11-03：夹具改成**三列**表。四列表的最后一格是「状态」列，
+  // 那里写「已证/已验证」是结论而不是误读（四列表支持上线后就不再报 D7）。
   const doc = parseSemanticDoc(
     docWithAcceptanceRows([
-      '| A1 | p1 | e1 | 已验收（单测，2026-01-01） |',
-      '| A2 | p2 | e2 | 已证 |',
-    ]),
+      '| A1 | p1 | 已验收（单测，2026-01-01） |',
+      '| A2 | p2 | 已证 |',
+    ], ['#', '判据', '证据']),
   )
   const issues = detectDrift({
     entries: [makeEntry({ id: 'nm', status: 'implemented' })],

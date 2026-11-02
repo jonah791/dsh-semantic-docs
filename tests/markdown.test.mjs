@@ -169,15 +169,17 @@ test('有表头的正常表格仍不吃数据行（修正不得反噬正常形�
 
 // ---------- D7 近义词误读（2026-10-09 · t-a49e40a8）----------
 
-test('D7 尸体样本：格首「已证 / 已验证」⇒ nearMiss 计数到（真语料实测的两种写法）', () => {
+test('D7 尸体样本：格首「已证 / 已验证」⇒ nearMiss 计数到（**证据格**里的词表外写法）', () => {
+  // 2026-11-03 改夹具：必须用**三列**表（无状态列）。四列表里「已验证」是**状态结论**，
+  // 不再算近义词误读（那是本次修复的正向目标）；近义词判据只对证据格成立。
   const doc = parseSemanticDoc(
     docWithAcceptanceRows([
-      '| A1 | p1 | e1 | **已证**（2026-01-01 实测读数） |',
-      '| A2 | p2 | e2 | 已验证 |',
-      '| A3 | p3 | e3 | ✔ 已实测 |',
-      '| A4 | p4 | e4 | ⚠ 待线上验收 |',
-      '| A5 | p5 | e5 | 不可达（当前路径）：execute 先写目录，而 I1 保证该目录此前不存在 ⇒ 已由 try/catch 实现 |',
-    ]),
+      '| A1 | p1 | **已证**（2026-01-01 实测读数） |',
+      '| A2 | p2 | 已验证 |',
+      '| A3 | p3 | ✔ 已实测 |',
+      '| A4 | p4 | ⚠ 待线上验收 |',
+      '| A5 | p5 | 不可达（当前路径）：execute 先写目录，而 I1 保证该目录此前不存在 ⇒ 已由 try/catch 实现 |',
+    ], ['#', '判据', '证据']),
   )
   assert.equal(doc.acceptance.nearMiss, 2, '两条词表外写法应被点名')
   assert.equal(doc.acceptance.rows[0].nearMiss, true, '「**已证**（…）」应命中（去粗体后格首仍是「已证」）')
@@ -186,6 +188,50 @@ test('D7 尸体样本：格首「已证 / 已验证」⇒ nearMiss 计数到（�
   assert.equal(doc.acceptance.proven, 1, 'proven 仍只认 ✔ 那一行')
   assert.equal(doc.acceptance.pendingMarked, 1, '「待线上验收」仍单独计数')
   assert.equal(doc.acceptance.total, 5)
+})
+
+// ---------- 四列表支持（2026-11-03 · lh-c6ba677d）----------
+
+test('四列表：状态格写「已验证」⇒ 算已验，且证据格取「证据」列而不是最后一格', () => {
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows([
+      '| A1 | p1 | e1 | 已验证 |',
+      '| A2 | p2 | e2 | 已实测 |',
+      '| A3 | p3 | e3 | 待线上验收 |',
+    ]),
+  )
+  assert.equal(doc.acceptance.total, 3)
+  assert.equal(doc.acceptance.proven, 2, '「已验证」与「已实测」都算已验（前者是本次修复的那一格）')
+  assert.equal(doc.acceptance.nearMiss, 0, '状态格里的是结论，不是近义词误读')
+  assert.equal(doc.acceptance.rows[0]?.evidence, 'e1', '证据取自「装置/证据」列')
+  assert.equal(doc.acceptance.rows[0]?.status, '已验证', '状态单独成字段，不再与证据混成一格')
+  assert.equal(doc.acceptance.rows[2]?.pendingMarked, true, '「待线上验收」照旧单独计数')
+})
+
+test('尸体：单元格里的转义竖线 \\| 不得切列（切了就会让后面所有列错位）', () => {
+  // 真实形状（dsh-llm-retry / dsh-code-search / dsh-clyan 实测）：证据格里写命令行或正则，
+  // 里面带 `\|`。旧实现直接 split('|') ⇒ 一行 5–6 格，「证据」与「状态」都被切成碎片。
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows([
+      '| A1 | p1 | `grep -n "a\\|b"` → 命中 | 已实测 |',
+    ]),
+  )
+  assert.equal(doc.acceptance.total, 1)
+  assert.equal(doc.acceptance.rows[0]?.evidence, 'grep -n "a|b" → 命中', '转义竖线还原成字面 `|`')
+  assert.equal(doc.acceptance.rows[0]?.status, '已实测')
+  assert.equal(doc.acceptance.rows[0]?.proven, true)
+})
+
+test('已知 caveat（钉住现状，不是认可它）：状态格同时写「已实测」与「线上未通过」⇒ 仍算已验', () => {
+  // 这是 fail-open，不是本次要修的东西：加「未通过」一票否决会让 17 份文档共 29 行的既有读数一起翻，
+  // 而「单测已过、线上未过」算不算已验是**语义决定**，该由文档作者单独裁决。
+  // 这条测试的作用是：将来谁改了它，红在这里，而不是静默改掉 29 行。
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows([
+      '| A1 | p1 | e1 | 已实测（单测）；⚠ 线上验收未通过——覆盖不足 |',
+    ]),
+  )
+  assert.equal(doc.acceptance.proven, 1, '现状：仍算已验（缺口已单独登记到长时域台账）')
 })
 
 test('D7 对照：✔ 已实测 / ⚠ 待线上验收 / **长散文格** ⇒ 一条不报（锚定格首的分辨力）', () => {
@@ -201,26 +247,23 @@ test('D7 对照：✔ 已实测 / ⚠ 待线上验收 / **长散文格** ⇒ 一
   assert.equal(doc.acceptance.nearMiss, 0, '长散文格不得误报——否则告警变噪音')
 })
 
-test('D7 真语料对照：全库 nearMiss 只允许已知那一份（缺口钉在这里，不是说它没问题）', () => {
+test('D7 真语料对照：全库 nearMiss 必须为空（那一份缺口 2026-11-03 已修好，清单清零）', () => {
   // nearMiss = 「人读等于已证、但不在严格词表里」的写法。
   //
-  // ⚠ 这条断言**不是**「全库为 0」——实测只有 1 份文档不在 0 上，而它是**真缺口**：
-  // `dsh-llm-probe/docs/semantic.md` 用的是四列表 `| # | 命题 | 证据 | 状态 |`，
-  // 而解析器取「最后一个非空格」当证据 ⇒ 抓到的是**状态格**里的 `已验证`（不在 PASS_RE 里），
-  // 于是 8 条真·已验的条目被读成「未验」。人读已证、机器读未验，这正是 D7 要抓的形状。
+  // 2026-11-03：`dsh-llm-probe` 那 8 条**已修**。它用的是四列表 `| # | 命题 | 证据 | 状态 |`，
+  // 旧解析器取「最后一个非空格」当证据 ⇒ 抓到状态格里的 `已验证`（不在 PASS_RE 里）⇒
+  // 8 条真·已验被读成「未验」。修法是按表头认列（证据格 / 状态格分开取），
+  // 现在它从 0/8/8 变成 8/8/0。
   //
-  // 修法是解析器支持四列表（状态格 + 证据格分开取），但那要动全库 67 份文档的共用解析层，
-  // 不塞进本次提交。所以这里把缺口**钉成精确清单**：
-  //   · 新文档出现 nearMiss ⇒ 红（判据对好样本发火，或真有人用了词表外写法）
-  //   · 缺口被修好 ⇒ 也红（提醒把这份清单清空，别让豁免变成永久免检）
-  const KNOWN_GAP = ['self-plugins/dsh-llm-probe/docs/semantic.md: 8 条']
+  // 清单**必须留在 0**：新文档出现 nearMiss ⇒ 红（判据对好样本发火，或真有人用了词表外写法）。
+  const KNOWN_GAP = []
   const docs = realCorpus()
   assert.ok(docs.length >= 30, `真语料只有 ${docs.length} 份 ⇒ 这条对照无意义`)
   const hits = docs
     .map((file) => ({ file, doc: parseSemanticDoc(readFileSync(file, 'utf8')) }))
     .filter((x) => x.doc.acceptance.nearMiss !== 0)
     .map((x) => `${x.file.slice(REAL_WORKSPACE.length + 1).replace(/\\/g, '/')}: ${x.doc.acceptance.nearMiss} 条`)
-  assert.deepEqual(hits, KNOWN_GAP, 'nearMiss 清单变了：要么是新缺口（查文档写法），要么是缺口已修（清空 KNOWN_GAP）')
+  assert.deepEqual(hits, KNOWN_GAP, 'nearMiss 清单不为空：要么是新缺口（查文档写法），要么是修复回退了')
 })
 
 // ---------- 节 span 定位：子标题不得抢走正式节（2026-10-09 · t-cdb92e72 附带）----------

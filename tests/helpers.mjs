@@ -198,9 +198,9 @@ export const DOC_INCOMPLETE = `# 语义文档：残缺样本
 /**
  * 造一份 **10 节齐全** 的语义文档，只替换「可证伪验收」表的数据行。
  * 用途：单变量地测验收解析（nearMiss / proven / pendingMarked），不受别节内容干扰。
- * 2026-10-09 加（t-a49e40a8 · D7 近义词误读）。
+ * 2026-10-09 加（t-a49e40a8 · D7 近义词误读）· 2026-11-03 加 `header` 参数（四列表支持）：三列表没有状态列。
  */
-export function docWithAcceptanceRows(rows) {
+export function docWithAcceptanceRows(rows, header = ['#', '判据', '装置', '状态']) {
   return [
     '# 语义文档：测试夹具', '',
     '> 版本 v0.1 · 2026-01-01 · 状态：已实现',
@@ -210,7 +210,9 @@ export function docWithAcceptanceRows(rows) {
     '## 3 概念模型与不变量', 'x',
     '## 4 契约', 'x',
     '## 5 边界与信任', 'x',
-    '## 6 可证伪验收', '| # | 判据 | 装置 | 状态 |', '|---|---|---|---|',
+    '## 6 可证伪验收',
+    `| ${header.join(' | ')} |`,
+    `|${header.map(() => '---').join('|')}|`,
     ...rows,
     '## 7 与实现的关系', 'x',
     '## 8 实践修订记录', 'x',
