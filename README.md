@@ -14,7 +14,7 @@
   <a href="https://github.com/jonah791/dsh-semantic-docs"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version"></a>
   <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
-  <img src="https://img.shields.io/badge/tests-78%20passed-brightgreen" alt="tests">
+  <img src="https://img.shields.io/badge/tests-82%20passed-brightgreen" alt="tests">
 </p>
 
 **一句话**：把「每个能力都有一份说清自身语义的文档」变成**可执行、可检查**的设施——5 个工具读写语义文档注册表、按证据**重判**条目状态、跑 D1–D7 drift 检查 + 验收快照对账、生成人类索引。
