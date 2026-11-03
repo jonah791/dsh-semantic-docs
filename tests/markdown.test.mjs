@@ -113,7 +113,11 @@ test('元信息：状态值在 · 分隔符处截断，不吃掉后续内容', (
   assert.equal(doc.meta.version, 'v1')
 })
 
-test('元信息：写在 §1 表格里的版本/状态不被头部解析（规范位置是 H1 后的引用块）', () => {
+test('元信息：写在 §1 表格里**也能**解析（2026-11-03 契约变更；本条断言改前为 null）', () => {
+  // 变更理由：全库 67 份语义文档里 21 份把元信息写在 §1 表格（或该节的手写变体），
+  // 原先「只认 H1 后的引用块」⇒ 这 21 份的 status 一律 null ⇒ `semantic_check` 的
+  // **D2「声明高于证据」对它们完全失明**——不是报错，是那一整类检查静默不适用。
+  // 「规范位置」与实践冲突到 31% 时，改解析器比改 21 份文档更安全（后者有搬丢内容的风险）。
   const doc = parseSemanticDoc([
     '# 语义文档：样本',
     '',
@@ -124,8 +128,8 @@ test('元信息：写在 §1 表格里的版本/状态不被头部解析（规�
     '| 版本 | v0.9 |',
     '| 状态 | verified |',
   ].join('\n'))
-  assert.equal(doc.meta.version, null)
-  assert.equal(doc.meta.status, null)
+  assert.equal(doc.meta.version, 'v0.9')
+  assert.equal(doc.meta.status, 'verified')
 })
 
 // ---- 表格分块（2026-09-22 修正：续块首行曾被当表头吃掉）----

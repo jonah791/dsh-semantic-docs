@@ -447,10 +447,24 @@ export function parseSemanticDoc(text: string): DocParse {
     // 逐行去 Markdown 强调/行内代码（**保留换行**，否则状态值会吞掉后续行）。
     // 2026-09-13 实测修正：模板推荐的 `状态：**已实现**` 加粗写法曾因正则 `[^·|\n*]+` 遇 `*`
     // 直接失配 → 状态一律解析为 null（连按模板写的文档也读不出来）。
+    // 元信息分隔符：`：`（引用行 / 正文）、`|`（表格单元格），或**没有**（`状态 draft`）。
+    const SEP = '[：:|]'
     const plain = scope.split('\n').map(cleanInline).join('\n')
-    const version = /版本\s*[：:]?\s*(v?\d+(?:\.\d+)*)/i.exec(plain)?.[1] ?? null
-    const date = /(20\d{2}-\d{2}-\d{2})/.exec(plain)?.[1] ?? null
-    const status = /状态\s*[：:]\s*([^·|\n]+)/.exec(plain)?.[1]?.trim() ?? null
+    // 元信息不一定在 headerText 里（2026-11-03 实测四种写法）：① H1 后引用行带冒号（模板）
+    // ② 引用行**不带**冒号（`> 元信息：版本 v0.1 · 状态 draft · …`）③ H1 后表格
+    // ④ `## 1 · 元信息` 节里的表格。③ 已由分隔符含 `|` 覆盖；②④ 需要两步：
+    //   ② 分隔符设为**可选**；④ 窄范围读不出就退回**前 40 行**（元信息总在开头，
+    //     且只在窄范围失败时才用 ⇒ 正文里的「状态」不会抢先命中）。
+    // 为什么必须修：`status` 解析不出的文档，`semantic_check` 的 D2「声明高于证据」
+    // **对它完全失明**——不是报错，是这一整类检查静默不适用。
+    const plainWide = text.split('\n').slice(0, 40).map(cleanInline).join('\n')
+    const pick = (re: RegExp): string | null => re.exec(plain)?.[1] ?? re.exec(plainWide)?.[1] ?? null
+    const version = pick(new RegExp(`版本\\s*${SEP}?\\s*(v?\\d+(?:\\.\\d+)*)`, 'i'))
+    const date = pick(/(20\d{2}-\d{2}-\d{2})/)
+    // `状态` 必须是**元信息上下文里的**那一个：前置字符限定为行首 / 空白 / `|` / `·` / `>` / `：`。
+    // 不加这条边界会误吃正文——2026-11-03 实测：`安全交战闭环（一次交战的唯一状态持有者与唯一执行入口）`
+    // 被解析成 status = `持有者与唯一执行入口）`，而真正的 status 在另一行 ⇒ D2 判的是错的东西。
+    const status = pick(/(?:^|[\s|·>：])状态\s*[：:|]?\s*([^·|\n]+)/)?.trim() ?? null
     const implHints = [...plain.matchAll(/实现落点[^\n]*/g)].map((m) => cleanInline(m[0])).slice(0, 3)
     return { version, date, status, implHints }
   })()
