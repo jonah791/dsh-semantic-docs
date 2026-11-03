@@ -95,7 +95,7 @@ src/index.ts:apply ── ws = config.workspace ?? process.cwd()
 |---------|------|------|
 | `verified` 但 `pending > 0` 或 `total = 0` | **D2 error**（声明高于证据） | README §5 |
 | `implemented` 但 `impl` 全空 | **D2 error** | 同上 |
-| 证据已足而声明更低（如 impl 在、pending=0） | 只给 `⤴可晋升` 提示，**不算 drift** | README §8.1 口径 3 |
+| 证据已足而声明更低（如 impl 在、pending=0） | 只给 `⤴可晋升` 提示，**不算 drift** | §5 |
 | `deprecated` | 只查 D1（不参与 D2/D3/D4/D6） | README §5 |
 | 文档命中 `needReview` 正则且 impl 比文档新 | **抑制 D3**（note 里列出被抑制的条目） | `needReview`（`markdown.ts:341`） |
 
@@ -208,7 +208,7 @@ src/index.ts:apply ── ws = config.workspace ?? process.cwd()
 
 - **2026-09-14 补课：本插件此前无语义文档（可维护性工程）**
   - 语义**被确认**：只报不改 / 不吞异常 / 坏注册表拒绝覆盖 / 原子写 / 状态现算（声明 ≠ 事实）/ fail-closed 的 `pending` 口径 / D5 四扫描根且排除 `docs/semantics/**`。
-  - 语义**被补充**：① `PASS_RE`/`PENDING_RE` 的**字面契约**（`markdown.ts:120-121`）——文档「给机器读的部分」是契约不是措辞；② `pendingMarked` / `unprovenUnmarked` 的双口径暴露（README §8.1 口径 1 的实现落点）；③ D3 的 `needReview` 抑制通道（本文刻意不复述其字面，见 §2）。
+  - 语义**被补充**：① `PASS_RE`/`PENDING_RE` 的**字面契约**（`markdown.ts:120-121`）——文档「给机器读的部分」是契约不是措辞；② `pendingMarked` / `unprovenUnmarked` 的双口径暴露（口径见 §2 / §4.4；此处是实现落点）；③ D3 的 `needReview` 抑制通道（本文刻意不复述其字面，见 §2）。
   - 语义**被修正**：无（首次成文）。记录一处**配置语义缺口**：`enabled` 声明了但未门控任何行为（§8）——不是 bug 但违反「声明即契约」直觉，需要显式写进文档而不是留在代码里。
   - 教训：**检查器自身也必须被检查**——本插件是 D1–D7 的判官，但它自己的 `enabled` 字段、写入面回退路径此前都无文档；「谁检查检查器」的答案是**语义文档 + 尸体测试**（`tests/corpse.test.mjs` 正是这一思路的先例）。
 
