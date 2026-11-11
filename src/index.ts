@@ -129,6 +129,7 @@ export function apply(ctx: Context, config: Config): void {
   // ---------------------------------------------------------------------
   ctx.tools.register(defineTool({
     name: 'semantic_list',
+    deferLoading: true,
     description:
       '列出语义文档注册表条目（可按 status/owner 过滤），并对每条**现算状态**（声明 ≠ 事实：按 impl 落点 + 文档解析出的验收 pending 重判）。' +
       '真源：<workspace>/docs/semantics/registry.json。注册表缺失/坏 JSON 会显式报错（不静默返回空清单）。',
@@ -241,6 +242,7 @@ export function apply(ctx: Context, config: Config): void {
   // ---------------------------------------------------------------------
   ctx.tools.register(defineTool({
     name: 'semantic_get',
+    deferLoading: true,
     description:
       '取单条语义文档条目详情：声明状态 + 现算状态（含判据理由）、文档大纲（标题树）、可证伪验收统计（总数/已证/待验）、未决问题数、impl/twins 落点存在性。',
     parameters: {
@@ -356,6 +358,7 @@ export function apply(ctx: Context, config: Config): void {
   // ---------------------------------------------------------------------
   ctx.tools.register(defineTool({
     name: 'semantic_check',
+    deferLoading: true,
     description:
       '语义文档 drift 检查（D1 路径不存在 / D2 状态与证据不符 / D3 实现比文档新 / D4 必备结构缺节 / D5 存在未注册的 docs/semantic*.md / D6 缺「实践修订记录」小节 / D7 验收格近义词误读）' +
       ' + **验收快照对账**（注册表 acceptance ↔ 文档解析；缺失与不一致都报，不把「无法对账」当「已对齐」）' +
@@ -551,6 +554,7 @@ export function apply(ctx: Context, config: Config): void {
   // ---------------------------------------------------------------------
   ctx.tools.register(defineTool({
     name: 'semantic_register',
+    deferLoading: true,
     description:
       '登记/更新一条语义文档条目（幂等 upsert，同 id 不会重复）并重新生成 docs/semantics/INDEX.md。' +
       '不写文档正文（I2：文档随代码，注册表只存引用）；若 doc 存在，acceptance/openQuestions 由文档解析自动回填（README §6）。' +
@@ -665,6 +669,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'semantic_unregister',
+    deferLoading: true,
     description:
       '注销一条语义文档条目：从 docs/semantics/registry.json 移除该条目并重新生成 INDEX.md。'
       + '**只删注册表条目，不删文档正文**——正文属插件目录，归退役流程（plugin_purge）管。'

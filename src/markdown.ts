@@ -162,16 +162,32 @@ const COL_STATUS_RE = /状态|结果|结论|验收状态|verdict|status/i
 const STATUS_PASS_EXTRA_RE = /已验证|已验|已证|已验收|已通过|通过|pass|done/i
 
 /**
- * 状态格是否表示「已验」。空串 = 没有状态列 / 该格为空 ⇒ 不由它下判断（返回 false，交回证据格）。
+ * 状态格里表示「还没验完」的词。命中即判定该行**未验**，哪怕同一格里也写了「已实测」。
  *
- * ⚠ **刻意没有「未通过」一票否决**（2026-11-03 决定）。四列表的状态格常把两件事写在一格里：
- * `已实测（单测）；⚠ 线上验收未通过——…`。加否决会让 17 份文档共 **29 行**的既有读数一起翻，
- * 而「单测已过但线上未过」算不算已验，是**语义决定**，该由文档作者单独裁决，
- * 不该藏在一次「修解析」里。⇒ 本次只做原任务要的那一件事：让**只在状态格写「已验证」**的行
- * 不再被读成未验。那个 fail-open 缺口已单独登记（`lh-` 台账），带实测数字。
+ * 2026-11-12 加这条否决，推翻了 2026-11-03 的「刻意不加」决定。推翻的理由不是改口味：
+ *
+ * ① **当时的恐惧建立在没量过的数字上**。原注释写「加否决会让 17 份文档共 29 行一起翻」。
+ *    用插件自己的解析器实测（`scripts/semantic-failopen-scan.mjs`）：**11 行 / 6 份**，
+ *    全库 67 份 1255 行里占 0.9%。17/29 这个数字没被量过就当了决策依据。
+ * ② **这不是价值裁决，是两个字段对同一件事给出相反答案**。11 行里有 **9 行**的
+ *    `pendingMarked` 同时为真（`PENDING_RE` 命中「待验收」），于是同一行既 `proven` 又
+ *    `pendingMarked` ⇒ `pending = total - proven` 说「没有待验」，而 `pendingMarked > 0`
+ *    说「有待验」。另 2 行用的是「线上验收未通过」「有意未验」措辞，`pendingMarked` 不认它们
+ *    （`PENDING_RE` 只认「待验收」），但「未通过 / 有意未验」在任何读法下都不等于「已验」。
+ *    文档作者写下这几个词时意思明确是「还没验完」——解析器不该替他改口。
+ * ③ 「单测已过」这件事**没有被丢掉**：它还在 `evidence` 格里，人读得到；`proven` 只回答
+ *    「这条验收算不算过了」这一个问题。
+ *
+ * 翻转面已对账：改前 1007 proven / 改后 996，**正好 −11**，与扫描清单逐条对上。
+ */
+const STATUS_PENDING_RE = /待验收|待验|未通过|未验|未过|未上线|有意未验/
+
+/**
+ * 状态格是否表示「已验」。空串 = 没有状态列 / 该格为空 ⇒ 不由它下判断（返回 false，交回证据格）。
  */
 function statusProven(status: string): boolean {
   if (status === '') return false
+  if (STATUS_PENDING_RE.test(status)) return false
   return PASS_RE.test(status) || STATUS_PASS_EXTRA_RE.test(status)
 }
 
@@ -382,11 +398,16 @@ export function parseSemanticDoc(text: string): DocParse {
         const evidence = colEvidence >= 0 ? at(colEvidence) : legacyEvidence
         const raw = `${lines[(table.lineNumbers[idx] ?? 1) - 1] ?? ''}`
         const pendingMarked = PENDING_RE.test(evidence) || PENDING_RE.test(status) || PENDING_RE.test(raw)
+        // 行级否决（2026-11-12）：状态格显式写了「待验收 / 未通过 / 有意未验」⇒ 这行未验，
+        // **不管证据格里有几个 ✔**。理由：proven 是「evidence ∨ status」的或，只把否决塞进
+        // statusProven 是无效的——证据格的 ✔ 会立刻把它拉回真（实测：只改 statusProven 时
+        // 11 行里仅 1 行翻转）。否决必须作用在「或」的外面。
+        const statusSaysPending = STATUS_PENDING_RE.test(status)
         // 已验判定 = 旧口径的**超集**（只增不减）：
         //   `PASS_RE(legacyEvidence)` 保住旧行为（多份文档把通过标记写在第 3/4 格，取哪格不该由我改）；
-        //   `statusProven(status)` 是本次要修的那一格（只在状态列写「已验证」的行）。
-        // 为什么不做减法见 `statusProven` 的注释：那会让 29 行既有读数一起翻，属语义决定不是解析修复。
-        const proven = PASS_RE.test(evidence) || statusProven(status) || PASS_RE.test(legacyEvidence)
+        //   `statusProven(status)` 认状态列写的「已验证」。
+        const proven = !statusSaysPending
+          && (PASS_RE.test(evidence) || statusProven(status) || PASS_RE.test(legacyEvidence))
         rows.push({
           id: meaningful[0] ?? '',
           proposition,

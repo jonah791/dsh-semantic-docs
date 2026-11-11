@@ -226,16 +226,46 @@ test('尸体：单元格里的转义竖线 \\| 不得切列（切了就会让后
   assert.equal(doc.acceptance.rows[0]?.proven, true)
 })
 
-test('已知 caveat（钉住现状，不是认可它）：状态格同时写「已实测」与「线上未通过」⇒ 仍算已验', () => {
-  // 这是 fail-open，不是本次要修的东西：加「未通过」一票否决会让 17 份文档共 29 行的既有读数一起翻，
-  // 而「单测已过、线上未过」算不算已验是**语义决定**，该由文档作者单独裁决。
-  // 这条测试的作用是：将来谁改了它，红在这里，而不是静默改掉 29 行。
+test('缺口已堵（2026-11-12 翻转）：状态格同时写「已实测」与「线上未通过」⇒ **不算已验**', () => {
+  // 这条原先钉的是 fail-open 的现状。2026-11-12 翻转了，理由见 `STATUS_PENDING_RE` 的注释：
+  //   ① 「17 份 / 29 行」那个数字从没量过；实测是 11 行 / 6 份（全库 1255 行的 0.9%）。
+  //   ② 不是价值裁决：`pendingMarked` 的判据就是「显式标注待线上验收」，两者同时为真时统计自相矛盾。
+  // 翻转面已对账：改前 proven 1007 / 改后 996，正好 −11，与 scripts/semantic-failopen-scan.mjs 清单逐条对上。
   const doc = parseSemanticDoc(
     docWithAcceptanceRows([
       '| A1 | p1 | e1 | 已实测（单测）；⚠ 线上验收未通过——覆盖不足 |',
     ]),
   )
-  assert.equal(doc.acceptance.proven, 1, '现状：仍算已验（缺口已单独登记到长时域台账）')
+  assert.equal(doc.acceptance.rows[0]?.proven, false, '拿到「未通过」仍判已验 = fail-open 回来了')
+  assert.equal(doc.acceptance.proven, 0)
+  // ⚠ `pendingMarked` 用的是更窄的 `PENDING_RE`（只认「待验收」），它**不认**「未通过」——
+  //   所以这一行 pendingMarked=false 是对的，不是漏了。两者分工：pendingMarked 数「显式标注待验的」，
+  //   proven 回答「这条算不算过」。本条只管后者。
+  assert.equal(doc.acceptance.rows[0]?.pendingMarked, false)
+  // 证据格里的「已实测」没被丢掉——它还在人读得到的地方
+  assert.equal(doc.acceptance.rows[0]?.evidence, 'e1')
+})
+
+test('两条路都堵：显式「待验收」的行同样不算已验（这一路 pendingMarked 也为真）', () => {
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows([
+      '| A1 | p1 | ✔ 已实测（单测） | 已实测（单测）；线上待验收 |',
+    ]),
+  )
+  assert.equal(doc.acceptance.rows[0]?.proven, false)
+  assert.equal(doc.acceptance.rows[0]?.pendingMarked, true, '这一行才是 provenance 与 pendingMarked 同时为真的那一类')
+})
+
+test('反向对照：状态格只写「已实测」不写待验 ⇒ 仍算已验（否决不许误伤）', () => {
+  // 没有这条，上面那条也能被「一律判未验」的坏实现满足——等于没区分力。
+  const doc = parseSemanticDoc(
+    docWithAcceptanceRows([
+      '| A1 | p1 | ✔ 已实测 | 已实测 |',
+      '| A2 | p2 | ✔ 已实测 | 已验证（线上跑过 3 次） |',
+    ]),
+  )
+  assert.equal(doc.acceptance.proven, 2, '正常已验的行被否决误伤了')
+  assert.equal(doc.acceptance.rows[0]?.pendingMarked, false)
 })
 
 test('D7 对照：✔ 已实测 / ⚠ 待线上验收 / **长散文格** ⇒ 一条不报（锚定格首的分辨力）', () => {
